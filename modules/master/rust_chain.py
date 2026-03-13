@@ -191,6 +191,7 @@ class MasterChain:
     def __init__(self, ffmpeg_path="ffmpeg"):
         self._backend = _BACKEND
         self._ffmpeg = ffmpeg_path
+        self._progress_callback = None
 
         if self._backend == "rust":
             self._rust = longplay.PyMasterChain(ffmpeg_path)
@@ -219,11 +220,30 @@ class MasterChain:
             self._cpp.load_audio(path)
             return True
 
+    # V5.5 FIX: Normalize platform keys between Python (Title Case) and Rust (lowercase)
+    _PLATFORM_KEY_MAP = {
+        "Spotify": "spotify",
+        "Apple Music": "apple_music",
+        "YouTube": "youtube",
+        "Tidal": "tidal",
+        "Amazon": "amazon",
+        "SoundCloud": "soundcloud",
+        "Radio": "radio",
+        "CD": "cd",
+        "Club": "club",
+        "Podcast": "podcast",
+    }
+
+    def _normalize_platform(self, platform):
+        """Convert Python title-case platform names to Rust lowercase keys."""
+        return self._PLATFORM_KEY_MAP.get(platform, platform.lower().replace(" ", "_"))
+
     def set_platform(self, platform):
+        normalized = self._normalize_platform(platform)
         if self._backend == "rust":
-            self._rust.set_platform(platform)
+            self._rust.set_platform(normalized)
         elif self._backend == "cpp":
-            self._cpp.set_platform(platform)
+            self._cpp.set_platform(normalized)
 
     def set_intensity(self, intensity):
         if self._backend == "rust":
@@ -232,10 +252,12 @@ class MasterChain:
             self._cpp.set_intensity(intensity)
 
     def ai_recommend(self, genre=None, platform=None, intensity=None):
+        norm_platform = self._normalize_platform(platform or "YouTube")
+        norm_genre = (genre or "Pop").lower()
         if self._backend == "rust":
-            return self._rust.ai_recommend(genre or "Pop", platform or "YouTube", intensity or 0.5)
+            return self._rust.ai_recommend(norm_genre, norm_platform, intensity or 0.5)
         elif self._backend == "cpp":
-            return self._cpp.ai_recommend(genre or "Pop", platform or "YouTube", intensity or 50.0)
+            return self._cpp.ai_recommend(norm_genre, norm_platform, intensity or 50.0)
 
     def apply_recommendation(self, rec):
         if self._backend == "rust":
@@ -249,14 +271,25 @@ class MasterChain:
         elif self._backend == "cpp":
             return self._cpp.preview(start_sec, duration_sec)
 
+    @property
+    def progress_callback(self):
+        return self._progress_callback
+
+    @progress_callback.setter
+    def progress_callback(self, callback):
+        """Set progress callback for render operations. Callback: fn(progress: float, message: str)."""
+        self._progress_callback = callback
+
     def render(self, output_path=None, callback=None):
         if output_path is None:
             output_path = os.path.join(os.path.dirname(self._ffmpeg) if '/' in self._ffmpeg else ".",
                                         "mastered_output.wav")
+        # Use explicitly passed callback, or fall back to the stored one
+        cb = callback or self._progress_callback
         if self._backend == "rust":
-            return self._rust.render(output_path, callback)
+            return self._rust.render(output_path, cb)
         elif self._backend == "cpp":
-            return self._cpp.render(output_path, callback)
+            return self._cpp.render(output_path, cb)
 
     def get_ab_comparison(self):
         if self._backend == "rust":

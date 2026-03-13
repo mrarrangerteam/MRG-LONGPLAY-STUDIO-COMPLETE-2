@@ -130,10 +130,21 @@ impl PyMasterChain {
 
     /// Render the mastered audio to output_path
     #[pyo3(signature = (output_path=None, callback=None))]
-    fn render(&mut self, output_path: Option<&str>, callback: Option<Py<PyAny>>) -> Option<String> {
-        let _ = callback; // TODO: wire up progress callback
+    fn render(&mut self, py: Python<'_>, output_path: Option<&str>, callback: Option<Py<PyAny>>) -> Option<String> {
         let path = output_path.unwrap_or("mastered_output.wav");
-        let success = self.inner.render(path, None);
+
+        let progress_cb: Option<longplay_chain::ProgressCallback> = callback.map(|py_cb| {
+            let cb: longplay_chain::ProgressCallback = Box::new(move |progress: f32, msg: &str| {
+                // The render runs on the same thread with the GIL held
+                let _ = Python::try_attach(|py| {
+                    let _ = py_cb.call(py, (progress, msg), None);
+                });
+            });
+            cb
+        });
+
+        let success = self.inner.render(path, progress_cb);
+        let _ = py;
         if success {
             Some(path.to_string())
         } else {
