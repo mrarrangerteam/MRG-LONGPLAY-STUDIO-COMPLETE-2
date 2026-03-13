@@ -29,3 +29,11 @@ output/
 
 # Logs
 *.log
+
+# Rust build artifacts
+rust/target/
+*.dylib
+*.dll
+
+# Virtual environments (all)
+.venv/
