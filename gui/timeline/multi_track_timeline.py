@@ -287,6 +287,13 @@ class MultiTrackTimeline(QWidget):
         # State for clip drag (Story 2.3)
         self._drag_state: Optional["_DragStateType"] = None
 
+        # State for clip trim (Story 2.4)
+        self._trim_state: Optional[object] = None
+
+        # Keyboard shortcut: S for split at playhead
+        split_shortcut = QShortcut(QKeySequence("S"), self)
+        split_shortcut.activated.connect(self._split_at_playhead)
+
     # -- public API --------------------------------------------------------
     def set_project(self, project: Project) -> None:
         self._project = project
@@ -437,9 +444,20 @@ class MultiTrackTimeline(QWidget):
                         best = edge
         return best
 
+    # -- split at playhead (keyboard shortcut S) --------------------------
+    def _split_at_playhead(self) -> None:
+        """Split whichever clip is under the playhead on each track."""
+        from gui.timeline.clip_trim import split_clip_at
+
+        for track in self._project.tracks:
+            clip = track.get_clip_at(self._playhead_time)
+            if clip is not None:
+                split_clip_at(self, clip.id, self._playhead_time)
+
     # -- mouse handlers on the scene ---------------------------------------
     def _scene_mouse_press(self, event: object) -> None:
         from gui.timeline.clip_drag import begin_drag
+        from gui.timeline.clip_trim import detect_trim_edge, begin_trim, split_clip_at
 
         pos = event.scenePos()  # type: ignore[union-attr]
         # Click in ruler area -> move playhead
@@ -455,12 +473,19 @@ class MultiTrackTimeline(QWidget):
             t = max(0.0, pos.x() / self._pps)
             item = self._scene.itemAt(pos, self._view.transform())
             if isinstance(item, ClipItem):
-                self.clip_split.emit(item.clip_id, t)
+                split_clip_at(self, item.clip_id, t)
             return
 
-        # Check if clicking on a clip — start drag
+        # Check if clicking on a clip
         item = self._scene.itemAt(pos, self._view.transform())
         if isinstance(item, ClipItem):
+            # Check for trim handles first
+            edge = detect_trim_edge(item, pos.x(), self._pps)
+            if edge is not None:
+                self._trim_state = begin_trim(self, item, edge)
+                return
+
+            # Otherwise start drag
             self._drag_state = begin_drag(self, item, pos)
             self.clip_selected.emit(item.clip_id)
             return
@@ -470,6 +495,7 @@ class MultiTrackTimeline(QWidget):
 
     def _scene_mouse_move(self, event: object) -> None:
         from gui.timeline.clip_drag import update_drag
+        from gui.timeline.clip_trim import update_trim
 
         pos = event.scenePos()  # type: ignore[union-attr]
 
@@ -479,17 +505,40 @@ class MultiTrackTimeline(QWidget):
             self.playhead_moved.emit(self._playhead_time)
             return
 
+        if self._trim_state is not None:
+            update_trim(self, self._trim_state, pos.x())
+            return
+
         if self._drag_state is not None:
             update_drag(self, self._drag_state, pos)
             return
+
+        # Hover cursor: show resize cursor when near clip edges
+        item = self._scene.itemAt(pos, self._view.transform())
+        if isinstance(item, ClipItem):
+            from gui.timeline.clip_trim import detect_trim_edge
+            edge = detect_trim_edge(item, pos.x(), self._pps)
+            if edge is not None:
+                self._view.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
+            else:
+                self._view.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        else:
+            if not self._razor_mode:
+                self._view.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
 
         QGraphicsScene.mouseMoveEvent(self._scene, event)  # type: ignore[arg-type]
 
     def _scene_mouse_release(self, event: object) -> None:
         from gui.timeline.clip_drag import end_drag
+        from gui.timeline.clip_trim import end_trim
 
         if self._dragging_playhead:
             self._dragging_playhead = False
+            return
+
+        if self._trim_state is not None:
+            end_trim(self, self._trim_state)
+            self._trim_state = None
             return
 
         if self._drag_state is not None:
