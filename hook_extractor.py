@@ -29,6 +29,14 @@ from pathlib import Path
 import struct
 import wave
 
+# Try Rust backend for Hook Extractor
+_RUST_HOOKS = False
+try:
+    from longplay import PyHookExtractor as _RustHookExtractor, PyHookResult as _RustHookResult
+    _RUST_HOOKS = True
+except ImportError:
+    pass
+
 
 @dataclass
 class HookResult:

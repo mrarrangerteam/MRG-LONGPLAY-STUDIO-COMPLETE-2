@@ -17,6 +17,14 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 from pathlib import Path
 
+# Try Rust backend for AI DJ analysis
+_RUST_AIDJ = False
+try:
+    from longplay import PyAIDJ as _RustAIDJ, PyAudioAnalysis as _RustAudioAnalysis
+    _RUST_AIDJ = True
+except ImportError:
+    pass
+
 
 @dataclass
 class AudioAnalysis:

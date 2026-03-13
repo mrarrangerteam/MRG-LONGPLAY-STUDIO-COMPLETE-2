@@ -236,6 +236,26 @@ except ImportError:
     HookExtractor = None
     HookResult = None
 
+# Import Ozone 12 / Waves WLM meter widgets from Master Module
+try:
+    from modules.master.ui_panel import WavesWLMMeter, GainReductionHistoryWidget
+    _HAS_MASTER_WIDGETS = True
+except ImportError:
+    _HAS_MASTER_WIDGETS = False
+
+# Import IRC modes & mastering presets
+try:
+    from modules.master.genre_profiles import (
+        IRC_MODES, MASTERING_PRESET_NAMES, MASTERING_PRESET_CATEGORIES,
+        get_mastering_preset, get_irc_sub_modes
+    )
+    _HAS_PRESETS = True
+except ImportError:
+    _HAS_PRESETS = False
+    IRC_MODES = {}
+    MASTERING_PRESET_NAMES = []
+    MASTERING_PRESET_CATEGORIES = {}
+
 # Try PyQt6 first, then PySide6
 try:
     from PyQt6.QtWidgets import (
@@ -7349,89 +7369,169 @@ class LongPlayStudioV4(QMainWindow):
         parent_scroll.setWidget(center)
         
     def _create_right_panel(self, parent_scroll: QScrollArea):
-        """Create right panel with meter and controls"""
+        """Create right panel — Ozone 12 Maximizer + Waves WLM Plus Loudness Meter"""
         panel = QFrame()
-        panel.setMinimumWidth(180)
+        panel.setMinimumWidth(280)
         panel.setStyleSheet("""
             QFrame {
                 background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                    stop:0 #1a1a1e, stop:0.02 #242428, stop:0.98 #1e1e22, stop:1 #141416);
-                border-left: 1px solid #3a3a42;
+                    stop:0 #0E0E12, stop:0.02 #141418, stop:0.98 #111115, stop:1 #0A0A0C);
+                border-left: 1px solid #2A2A32;
             }
         """)
-        
+
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(15)
-        
-        # V5.5.1: MAXIMIZER — Gain knob that INSTANTLY boosts volume
-        maximizer_header = QLabel("⚡ MAXIMIZER")
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        # ═══════════════════════════════════════════════
+        #  MAXIMIZER — iZotope Ozone 12 Style
+        # ═══════════════════════════════════════════════
+        maximizer_header = QLabel("MAXIMIZER")
         maximizer_header.setStyleSheet("""
-            color: #00CED1;
+            color: #48CAE4;
             font-size: 11px;
             font-weight: bold;
             font-family: 'Menlo', monospace;
-            letter-spacing: 2px;
-            padding-bottom: 2px;
-            border-bottom: 1px solid #00CED1;
+            letter-spacing: 3px;
+            padding: 4px 0px 3px 0px;
+            border-bottom: 1px solid #00B4D8;
         """)
         layout.addWidget(maximizer_header)
 
-        # Gain Dial — controls QAudioOutput volume for INSTANT loudness change
+        # ── Mastering Preset dropdown ──
+        if _HAS_PRESETS and MASTERING_PRESET_NAMES:
+            preset_row = QHBoxLayout()
+            preset_row.setSpacing(4)
+            preset_lbl = QLabel("PRESET")
+            preset_lbl.setStyleSheet("color: #8E8A82; font-size: 8px; font-weight: bold; font-family: 'Menlo', monospace; letter-spacing: 1px;")
+            preset_row.addWidget(preset_lbl)
+            self.right_mastering_preset = QComboBox()
+            self.right_mastering_preset.addItem("— None —")
+            for name in MASTERING_PRESET_NAMES:
+                self.right_mastering_preset.addItem(name)
+            self.right_mastering_preset.setStyleSheet("""
+                QComboBox {
+                    background: #0A0A0C; color: #48CAE4;
+                    border: 1px solid #2A2A32; border-radius: 3px;
+                    padding: 3px 6px; font-size: 10px; font-family: 'Menlo', monospace;
+                }
+                QComboBox::drop-down { border: none; }
+                QComboBox QAbstractItemView {
+                    background: #141418; color: #E0DCD4;
+                    selection-background-color: #00B4D8;
+                }
+            """)
+            self.right_mastering_preset.currentTextChanged.connect(self._on_right_mastering_preset_changed)
+            preset_row.addWidget(self.right_mastering_preset, 1)
+            layout.addLayout(preset_row)
+
+        # ── IRC Mode dropdown (Ozone 12: IRC 1-5, IRC LL) ──
+        irc_row = QHBoxLayout()
+        irc_row.setSpacing(4)
+        irc_lbl = QLabel("IRC MODE")
+        irc_lbl.setStyleSheet("color: #8E8A82; font-size: 8px; font-weight: bold; font-family: 'Menlo', monospace; letter-spacing: 1px;")
+        irc_row.addWidget(irc_lbl)
+        self.right_irc_combo = QComboBox()
+        irc_mode_names = [k for k in IRC_MODES.keys() if " - " not in k] if IRC_MODES else ["IRC 1", "IRC 2", "IRC 3", "IRC 4", "IRC 5", "IRC LL"]
+        for m in irc_mode_names:
+            self.right_irc_combo.addItem(m)
+        self.right_irc_combo.setCurrentText("IRC 2")
+        self.right_irc_combo.setStyleSheet("""
+            QComboBox {
+                background: #0A0A0C; color: #48CAE4;
+                border: 1px solid #2A2A32; border-radius: 3px;
+                padding: 3px 6px; font-size: 10px; font-weight: bold; font-family: 'Menlo', monospace;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background: #141418; color: #E0DCD4;
+                selection-background-color: #00B4D8;
+            }
+        """)
+        self.right_irc_combo.currentTextChanged.connect(self._on_right_irc_mode_changed)
+        irc_row.addWidget(self.right_irc_combo, 1)
+        layout.addLayout(irc_row)
+
+        # ── IRC Sub-mode dropdown (only IRC 3 & 4: Pumping/Balanced/Crisp) ──
+        self.right_irc_submode_row = QHBoxLayout()
+        self.right_irc_submode_row.setSpacing(4)
+        self.right_irc_submode_lbl = QLabel("SUB-MODE")
+        self.right_irc_submode_lbl.setStyleSheet("color: #8E8A82; font-size: 8px; font-weight: bold; font-family: 'Menlo', monospace; letter-spacing: 1px;")
+        self.right_irc_submode_row.addWidget(self.right_irc_submode_lbl)
+        self.right_irc_submode = QComboBox()
+        self.right_irc_submode.setStyleSheet("""
+            QComboBox {
+                background: #0A0A0C; color: #F5C04A;
+                border: 1px solid #2A2A32; border-radius: 3px;
+                padding: 3px 6px; font-size: 10px; font-family: 'Menlo', monospace;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background: #141418; color: #E0DCD4;
+                selection-background-color: #F5C04A;
+            }
+        """)
+        self.right_irc_submode_row.addWidget(self.right_irc_submode, 1)
+        # Container widget for sub-mode row (hide/show)
+        self.right_irc_submode_widget = QWidget()
+        self.right_irc_submode_widget.setLayout(self.right_irc_submode_row)
+        self.right_irc_submode_widget.setVisible(False)  # Hidden by default (IRC 2 has no sub-modes)
+        layout.addWidget(self.right_irc_submode_widget)
+
+        # ── Gain Dial + Display (Ozone 12 teal theme) ──
         gain_section = QHBoxLayout()
         gain_section.setSpacing(8)
 
-        # Dial
         gain_dial_col = QVBoxLayout()
         gain_dial_col.setSpacing(2)
         gain_lbl = QLabel("GAIN")
         gain_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        gain_lbl.setStyleSheet("color: #00CED1; font-size: 8px; letter-spacing: 2px; font-weight: bold; font-family: 'Menlo', monospace;")
+        gain_lbl.setStyleSheet("color: #48CAE4; font-size: 8px; letter-spacing: 2px; font-weight: bold; font-family: 'Menlo', monospace;")
         gain_dial_col.addWidget(gain_lbl)
 
         self.right_gain_dial = QDial()
         self.right_gain_dial.setRange(0, 200)  # 0-20 dB
         self.right_gain_dial.setValue(0)
-        self.right_gain_dial.setFixedSize(90, 90)
+        self.right_gain_dial.setFixedSize(80, 80)
         self.right_gain_dial.setNotchesVisible(True)
         self.right_gain_dial.setStyleSheet("""
             QDial {
                 background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
                     fx:0.4, fy:0.4,
-                    stop:0 #2A2A30, stop:0.6 #1A1A1E,
-                    stop:0.85 #111114, stop:1 #0A0A0C);
-                border: 2px solid #00868B;
-                border-radius: 45px;
+                    stop:0 #1A1A20, stop:0.6 #111116,
+                    stop:0.85 #0C0C0E, stop:1 #080808);
+                border: 2px solid #00B4D8;
+                border-radius: 40px;
             }
         """)
         self.right_gain_dial.valueChanged.connect(self._on_right_gain_changed)
         gain_dial_col.addWidget(self.right_gain_dial, alignment=Qt.AlignmentFlag.AlignCenter)
         gain_section.addLayout(gain_dial_col)
 
-        # Gain display + dB label
+        # Gain display
         gain_info_col = QVBoxLayout()
         gain_info_col.setSpacing(2)
         gain_info_col.addStretch()
         self.right_gain_display = QLabel("+0.0")
         self.right_gain_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.right_gain_display.setFont(QFont("Menlo", 22, QFont.Weight.Bold))
-        self.right_gain_display.setStyleSheet("color: #00CED1;")
+        self.right_gain_display.setFont(QFont("Menlo", 24, QFont.Weight.Bold))
+        self.right_gain_display.setStyleSheet("color: #48CAE4;")
         gain_info_col.addWidget(self.right_gain_display)
 
         gain_unit = QLabel("dB")
         gain_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        gain_unit.setStyleSheet("color: #6B6B70; font-size: 10px; font-family: 'Menlo', monospace;")
+        gain_unit.setStyleSheet("color: #8E8A82; font-size: 10px; font-family: 'Menlo', monospace;")
         gain_info_col.addWidget(gain_unit)
         gain_info_col.addStretch()
         gain_section.addLayout(gain_info_col)
-
         layout.addLayout(gain_section)
 
-        # OUTPUT Ceiling row (dBTP limiter target)
+        # ── OUTPUT Ceiling ──
         output_row = QHBoxLayout()
         output_row.setSpacing(6)
         out_label = QLabel("OUTPUT")
-        out_label.setStyleSheet("color: #6B6B70; font-size: 9px; font-weight: bold; font-family: 'Menlo', monospace; letter-spacing: 1px;")
+        out_label.setStyleSheet("color: #8E8A82; font-size: 9px; font-weight: bold; font-family: 'Menlo', monospace; letter-spacing: 1px;")
         output_row.addWidget(out_label)
 
         self.right_ceiling_spin = QDoubleSpinBox()
@@ -7442,106 +7542,73 @@ class LongPlayStudioV4(QMainWindow):
         self.right_ceiling_spin.setDecimals(2)
         self.right_ceiling_spin.setStyleSheet("""
             QDoubleSpinBox {
-                background: #0A0A0C;
-                color: #00CED1;
-                border: 1px solid #2C2C34;
-                border-radius: 3px;
-                padding: 4px 8px;
-                font-size: 11px;
-                font-weight: bold;
-                font-family: 'Menlo', monospace;
+                background: #0A0A0C; color: #48CAE4;
+                border: 1px solid #2A2A32; border-radius: 3px;
+                padding: 4px 8px; font-size: 11px; font-weight: bold; font-family: 'Menlo', monospace;
             }
             QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
-                width: 14px;
-                background: #1A1A1E;
-                border: 1px solid #2C2C34;
+                width: 14px; background: #141418; border: 1px solid #2A2A32;
             }
         """)
         self.right_ceiling_spin.valueChanged.connect(self._on_right_ceiling_changed)
         output_row.addWidget(self.right_ceiling_spin, 1)
 
         tp_indicator = QLabel("TRUE PEAK")
-        tp_indicator.setStyleSheet("color: #22C55E; font-size: 8px; font-weight: bold; font-family: 'Menlo', monospace;")
+        tp_indicator.setStyleSheet("color: #43A047; font-size: 8px; font-weight: bold; font-family: 'Menlo', monospace;")
         output_row.addWidget(tp_indicator)
         layout.addLayout(output_row)
 
-        # Separator
+        # ── Gain Reduction History (Ozone 12 waveform) ──
+        if _HAS_MASTER_WIDGETS:
+            self.right_gr_history = GainReductionHistoryWidget()
+            layout.addWidget(self.right_gr_history, alignment=Qt.AlignmentFlag.AlignCenter)
+        else:
+            self.right_gr_history = None
+
+        # ── Separator ──
         sep_gain = QFrame()
         sep_gain.setFixedHeight(2)
-        sep_gain.setStyleSheet("background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0A0A0C, stop:0.5 #00CED1, stop:1 #0A0A0C);")
+        sep_gain.setStyleSheet("background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0A0A0C, stop:0.5 #00B4D8, stop:1 #0A0A0C);")
         layout.addWidget(sep_gain)
 
-        # V5.5.1: REAL-TIME METER header
-        meter_header = QLabel("REAL-TIME METER")
-        meter_header.setStyleSheet("""
-            color: #C89B3C;
-            font-size: 9px;
-            font-weight: bold;
-            font-family: 'Menlo', monospace;
-            letter-spacing: 2px;
-            padding-bottom: 2px;
-        """)
-        layout.addWidget(meter_header)
+        # ═══════════════════════════════════════════════
+        #  LOUDNESS METER — Waves WLM Plus Style
+        # ═══════════════════════════════════════════════
 
         # Audio Analysis Engine for REAL meter levels
         self.audio_engine = AudioAnalysisEngine()
 
-        # Level meter (dB bars)
+        # RealTimeMeter — still used internally for audio analysis data
         self.meter = RealTimeMeter()
         self.meter.set_audio_engine(self.audio_engine)
-        self.meter.setMinimumHeight(120)
-        self.meter.setMaximumHeight(140)
-        layout.addWidget(self.meter)
+        self.meter.setVisible(False)  # Hidden — replaced by WavesWLMMeter visually
 
-        # True peak
-        self.true_peak_label = QLabel("True Peak: --.- dBTP")
-        self.true_peak_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.true_peak_label.setStyleSheet("""
-            color: #ef4444;
-            font-size: 11px;
-            font-weight: bold;
-            font-family: 'Menlo', monospace;
-            background: #0A0A0C;
-            border: 1px solid #2C2C34;
-            border-radius: 3px;
-            padding: 3px 6px;
-        """)
-        layout.addWidget(self.true_peak_label)
+        if _HAS_MASTER_WIDGETS:
+            self.right_wlm_meter = WavesWLMMeter(target_lufs=-14.0)
+            layout.addWidget(self.right_wlm_meter, alignment=Qt.AlignmentFlag.AlignCenter)
+        else:
+            # Fallback: show old meter if import failed
+            self.right_wlm_meter = None
+            self.meter.setVisible(True)
+            self.meter.setMinimumHeight(120)
+            self.meter.setMaximumHeight(140)
+            layout.addWidget(self.meter)
 
-        # LUFS displays — Integrated + LRA
-        lufs_compact = QHBoxLayout()
-        lufs_compact.setSpacing(4)
-
-        self.lufs_integrated = LUFSDisplay("INTEGRATED")
-        lufs_compact.addWidget(self.lufs_integrated)
-
-        self.lufs_lra = LUFSDisplay("LRA")
-        self.lufs_lra.unit_text = "LU"
-        lufs_compact.addWidget(self.lufs_lra)
-
-        layout.addLayout(lufs_compact)
-
-        # Hidden but kept for backward compat
+        # Hidden backward-compat LUFS display references (data still fed by _on_position_changed)
         self.lufs_momentary = LUFSDisplay("MOMENTARY")
         self.lufs_momentary.setVisible(False)
         self.lufs_shortterm = LUFSDisplay("SHORT-TERM")
         self.lufs_shortterm.setVisible(False)
+        self.lufs_integrated = LUFSDisplay("INTEGRATED")
+        self.lufs_integrated.setVisible(False)
+        self.lufs_lra = LUFSDisplay("LRA")
+        self.lufs_lra.setVisible(False)
+        self.true_peak_label = QLabel("")
+        self.true_peak_label.setVisible(False)
+        self.lufs_target_label = QLabel("")
+        self.lufs_target_label.setVisible(False)
 
-        # Target indicator
-        self.lufs_target_label = QLabel("Target: -14.0 LUFS")
-        self.lufs_target_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lufs_target_label.setStyleSheet("""
-            color: #00B4D8;
-            font-size: 9px;
-            font-family: 'Menlo', monospace;
-            background: #0E0E10;
-            border: 1px solid #2C2C34;
-            border-radius: 3px;
-            padding: 2px 4px;
-        """)
-        layout.addWidget(self.lufs_target_label)
-
-        # Separator line
+        # ── Separator ──
         separator = QFrame()
         separator.setFixedHeight(2)
         separator.setStyleSheet("background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0A0A0C, stop:0.5 #3E3E46, stop:1 #0A0A0C);")
@@ -7732,6 +7799,33 @@ class LongPlayStudioV4(QMainWindow):
             self.lufs_lra.setValue(lra)
             self.true_peak_label.setText(f"True Peak: {peak_db:.1f} dBTP")
 
+            # V5.6: Feed Waves WLM Plus meter
+            if hasattr(self, 'right_wlm_meter') and self.right_wlm_meter is not None:
+                tp_l = levels_db.get("left_peak_db", -70.0) if levels_db else peak_db
+                tp_r = levels_db.get("right_peak_db", -70.0) if levels_db else peak_db
+                self.right_wlm_meter.set_levels(
+                    momentary=momentary_lufs,
+                    short_term=shortterm_lufs,
+                    integrated=integrated_lufs,
+                    lra=lra,
+                    tp_left=tp_l,
+                    tp_right=tp_r,
+                )
+
+            # V5.7: Feed GR to both WLM meter and GR history widget
+            gain_db_val = getattr(self, '_right_gain_db', 0.0)
+            ceiling_val = self.right_ceiling_spin.value() if hasattr(self, 'right_ceiling_spin') else -1.0
+            if gain_db_val > 0.01 and peak_db > ceiling_val:
+                gr_sim = min(gain_db_val, max(0.0, peak_db - ceiling_val) + gain_db_val * 0.2)
+            else:
+                gr_sim = 0.0
+
+            if hasattr(self, 'right_gr_history') and self.right_gr_history is not None:
+                self.right_gr_history.set_gr(gr_sim)
+
+            if hasattr(self, 'right_wlm_meter') and self.right_wlm_meter is not None:
+                self.right_wlm_meter.set_gr(gr_sim)
+
             # V5.5: Bridge to Master Module meters if window is open
             self._feed_master_module_meters(position_ms, levels_db)
 
@@ -7797,46 +7891,218 @@ class LongPlayStudioV4(QMainWindow):
                 self._gain_apply_timer.timeout.connect(self._apply_gain_preview)
             self._gain_apply_timer.start(400)
 
+    def _on_right_irc_mode_changed(self, mode_name: str):
+        """V5.7: IRC mode changed — update sub-mode, trigger re-render with new limiter."""
+        if _HAS_PRESETS:
+            sub_modes = get_irc_sub_modes(mode_name)
+            if sub_modes:
+                self.right_irc_submode.clear()
+                for sm in sub_modes:
+                    self.right_irc_submode.addItem(sm)
+                self.right_irc_submode.setCurrentText("Balanced")
+                self.right_irc_submode_widget.setVisible(True)
+            else:
+                self.right_irc_submode_widget.setVisible(False)
+
+        # Sync to Master Module if open
+        if hasattr(self, '_master_window') and self._master_window is not None:
+            mw = self._master_window
+            if hasattr(mw, 'chain') and hasattr(mw.chain, 'maximizer'):
+                try:
+                    mw.chain.maximizer.set_irc_mode(mode_name)
+                except Exception:
+                    pass
+
+        # Re-render with new IRC mode if gain > 0 or preset active
+        self._trigger_master_rerender()
+
+    def _on_right_mastering_preset_changed(self, preset_name: str):
+        """V5.7: Mastering preset changed — apply REAL processing through MasterChain."""
+        if not _HAS_PRESETS or preset_name == "— None —":
+            # Reset if deselected
+            if hasattr(self, '_gained_preview_active') and self._gained_preview_active:
+                gain_db = getattr(self, '_right_gain_db', 0.0)
+                if gain_db <= 0.01:
+                    self._apply_gain_preview()  # Will reset to original
+            return
+
+        preset = get_mastering_preset(preset_name)
+        if not preset:
+            return
+
+        # Update gain dial from preset if user hasn't set custom gain
+        mx = preset.get("maximizer", {})
+        if mx and getattr(self, '_right_gain_db', 0.0) < 0.01:
+            preset_gain = mx.get("gain", 0.0)
+            if preset_gain > 0 and hasattr(self, 'right_gain_dial'):
+                self.right_gain_dial.setValue(int(preset_gain * 10))
+
+        # Update IRC mode from preset
+        if mx and "irc_mode" in mx and hasattr(self, 'right_irc_combo'):
+            idx = self.right_irc_combo.findText(mx["irc_mode"])
+            if idx >= 0:
+                self.right_irc_combo.blockSignals(True)
+                self.right_irc_combo.setCurrentIndex(idx)
+                self.right_irc_combo.blockSignals(False)
+
+        # Sync to Master Module if open
+        if hasattr(self, '_master_window') and self._master_window is not None:
+            mw = self._master_window
+            if hasattr(mw, '_mastering_combo'):
+                idx = mw._mastering_combo.findText(preset_name)
+                if idx >= 0:
+                    mw._mastering_combo.setCurrentIndex(idx)
+
+        # Trigger REAL processing
+        self._trigger_master_rerender()
+
+    def _trigger_master_rerender(self):
+        """V5.7: Debounced trigger for MasterChain re-render."""
+        if not hasattr(self, '_master_rerender_timer'):
+            self._master_rerender_timer = QTimer()
+            self._master_rerender_timer.setSingleShot(True)
+            self._master_rerender_timer.timeout.connect(self._apply_gain_preview)
+        self._master_rerender_timer.start(500)
+
+    def _get_right_panel_chain(self):
+        """V5.7: Get or create MasterChain for right panel real-time processing."""
+        if hasattr(self, '_right_chain') and self._right_chain is not None:
+            return self._right_chain
+        try:
+            from modules.master import MasterChain
+            self._right_chain = MasterChain()
+            print("[MASTER] Right panel MasterChain created")
+            return self._right_chain
+        except Exception as e:
+            print(f"[MASTER] Cannot create chain: {e}")
+            self._right_chain = None
+            return None
+
+    def _sync_right_panel_to_chain(self):
+        """V5.7: Sync all right-panel controls to the MasterChain.
+        Works with both Rust proxy (rust_chain.py) and Python chain (chain.py).
+        """
+        chain = self._get_right_panel_chain()
+        if chain is None:
+            return
+
+        gain_db = getattr(self, '_right_gain_db', 0.0)
+        ceiling = self.right_ceiling_spin.value() if hasattr(self, 'right_ceiling_spin') else -1.0
+
+        # Maximizer: use proxy methods (works for both Rust and Python)
+        chain.maximizer.set_gain(gain_db)
+        chain.maximizer.set_ceiling(ceiling)
+
+        # IRC Mode
+        if hasattr(self, 'right_irc_combo'):
+            irc_mode = self.right_irc_combo.currentText()
+            sub_mode = "Balanced"
+            if hasattr(self, 'right_irc_submode') and self.right_irc_submode_widget.isVisible():
+                sub_mode = self.right_irc_submode.currentText() or "Balanced"
+            chain.maximizer.set_irc_mode(irc_mode, sub_mode)
+
+        # Mastering Preset (dynamics + imager)
+        if hasattr(self, 'right_mastering_preset') and _HAS_PRESETS:
+            preset_name = self.right_mastering_preset.currentText()
+            if preset_name != "— None —":
+                preset = get_mastering_preset(preset_name)
+                if preset:
+                    # Dynamics — use proxy methods if available, else direct access
+                    comp = preset.get("compressor", {})
+                    if comp:
+                        dyn = chain.dynamics
+                        if hasattr(dyn, 'set_threshold'):
+                            dyn.set_threshold(comp.get("threshold", -16))
+                            dyn.set_ratio(comp.get("ratio", 2.5))
+                            dyn.set_attack(comp.get("attack", 10))
+                            dyn.set_release(comp.get("release", 100))
+                            dyn.set_makeup_gain(comp.get("makeup", 2.0))
+                        elif hasattr(dyn, 'single_band'):
+                            dyn.single_band.threshold = comp.get("threshold", -16)
+                            dyn.single_band.ratio = comp.get("ratio", 2.5)
+                            dyn.single_band.attack = comp.get("attack", 10)
+                            dyn.single_band.release = comp.get("release", 100)
+                            dyn.single_band.makeup = comp.get("makeup", 2.0)
+                            dyn.enabled = True
+
+                    # Imager
+                    img = preset.get("imager", {})
+                    if img:
+                        chain.imager.set_width(int(img.get("width", 100)))
+
+                    # Maximizer overrides from preset
+                    mx = preset.get("maximizer", {})
+                    if mx:
+                        if "gain" in mx and gain_db < 0.01:
+                            chain.maximizer.set_gain(mx["gain"])
+                        if "ceiling" in mx:
+                            chain.maximizer.set_ceiling(mx["ceiling"])
+                        if "irc_mode" in mx:
+                            chain.maximizer.set_irc_mode(mx["irc_mode"])
+
     def _apply_gain_preview(self):
-        """Pre-process current track: apply gain + brickwall limiter → temp WAV → reload player.
-        This makes the audio ACTUALLY louder (not just the meter).
+        """V5.7: Process current track through REAL MasterChain (Dynamics + Imager + Maximizer).
+        Uses the full mastering chain for actual audio processing, not just gain.
+        Falls back to simple gain+limiter if chain unavailable.
         """
         try:
             gain_db = getattr(self, '_right_gain_db', 0.0)
+            has_preset = (hasattr(self, 'right_mastering_preset') and
+                         self.right_mastering_preset.currentText() != "— None —")
+
+            # Need either gain or preset to process
+            if gain_db <= 0.01 and not has_preset:
+                # Reset to original file
+                if hasattr(self, '_gained_preview_active') and self._gained_preview_active:
+                    original = self.audio_engine._current_file if hasattr(self, 'audio_engine') else None
+                    if original and os.path.exists(original):
+                        self.audio_player.player.stop()
+                        self.audio_player.player.setSource(QUrl.fromLocalFile(original))
+                        self._gained_preview_active = False
+                        was_playing = self.audio_player.is_playing
+                        current_pos = self.audio_player.player.position()
+                        QTimer.singleShot(150, lambda: self._restore_after_gain(current_pos, was_playing))
+                        print(f"[MASTER] Reset to original file")
+                return
+
             if not hasattr(self, 'audio_engine') or not self.audio_engine._has_soundfile:
                 return
             if self.audio_engine._current_data is None:
                 return
 
-            # Remember playback state
             was_playing = self.audio_player.is_playing
             current_pos = self.audio_player.player.position()
 
-            if gain_db <= 0.01:
-                # Reset to original file
-                if hasattr(self, '_gained_preview_active') and self._gained_preview_active:
-                    original = self.audio_engine._current_file
-                    if original and os.path.exists(original):
-                        self.audio_player.player.stop()
-                        self.audio_player.player.setSource(QUrl.fromLocalFile(original))
-                        self._gained_preview_active = False
-                        QTimer.singleShot(150, lambda: self._restore_after_gain(current_pos, was_playing))
-                        print(f"[GAIN] Reset to original file")
-                return
-
-            # Apply gain + ceiling to audio data
-            gained_data, sr = self.audio_engine.get_gained_audio()
-            if gained_data is None:
-                return
-
-            # Write temp WAV
             import tempfile
             temp_dir = os.path.join(tempfile.gettempdir(), "longplay_gain")
             os.makedirs(temp_dir, exist_ok=True)
-            temp_path = os.path.join(temp_dir, "gain_preview.wav")
+            temp_path = os.path.join(temp_dir, "master_preview.wav")
 
-            sf = self.audio_engine._sf
-            sf.write(temp_path, gained_data, sr, subtype='PCM_16')
+            # Try MasterChain for REAL processing
+            chain = self._get_right_panel_chain()
+            processed = False
+
+            if chain is not None:
+                try:
+                    self._sync_right_panel_to_chain()
+                    original_file = self.audio_engine._current_file
+                    if original_file and os.path.exists(original_file):
+                        chain.load_audio(original_file)
+                        result = chain.render(output_path=temp_path)
+                        if result and os.path.exists(result):
+                            processed = True
+                            print(f"[MASTER] Full chain render → {os.path.basename(result)}")
+                except Exception as e:
+                    print(f"[MASTER] Chain render failed, fallback to gain: {e}")
+
+            # Fallback: simple gain + limiter
+            if not processed:
+                gained_data, sr = self.audio_engine.get_gained_audio()
+                if gained_data is None:
+                    return
+                sf = self.audio_engine._sf
+                sf.write(temp_path, gained_data, sr, subtype='PCM_16')
+                print(f"[MASTER] Fallback gain-only → {os.path.basename(temp_path)}")
 
             # Hot-swap player source
             self.audio_player.player.stop()
@@ -7844,11 +8110,9 @@ class LongPlayStudioV4(QMainWindow):
             self._gained_preview_active = True
             self._gained_preview_path = temp_path
             QTimer.singleShot(200, lambda: self._restore_after_gain(current_pos, was_playing))
-            print(f"[GAIN] Applied +{gain_db:.1f} dB → {os.path.basename(temp_path)} "
-                  f"({len(gained_data)/sr:.1f}s)")
 
         except Exception as e:
-            print(f"[GAIN] Preview error: {e}")
+            print(f"[MASTER] Preview error: {e}")
             import traceback
             traceback.print_exc()
 
@@ -8837,8 +9101,10 @@ class LongPlayStudioV4(QMainWindow):
                     self.meter.setGraphicsEffect(effect)
                 effect.setOpacity(opacity)
 
-                # Also dim/restore the LUFS displays and True Peak label
+                # Also dim/restore the Waves WLM meter and GR history
                 for widget in [
+                    getattr(self, 'right_wlm_meter', None),
+                    getattr(self, 'right_gr_history', None),
                     getattr(self, 'true_peak_label', None),
                     getattr(self, 'lufs_integrated', None),
                     getattr(self, 'lufs_lra', None),
@@ -9668,9 +9934,24 @@ class LongPlayStudioV4(QMainWindow):
         self.export_video_check.setStyleSheet(f"color: {Colors.TEXT_PRIMARY}; font-size: 13px; padding: 5px;")
         options_layout.addWidget(self.export_video_check)
 
+        # Combined export option (video + audio in one file)
+        self.export_combined_check = QCheckBox("🎬 Combined MP4 (Video + Audio รวมไฟล์เดียว)")
+        if has_any_video:
+            self.export_combined_check.setChecked(True)
+        else:
+            self.export_combined_check.setChecked(False)
+            self.export_combined_check.setEnabled(False)
+        self.export_combined_check.setStyleSheet(f"color: {Colors.ACCENT}; font-size: 13px; padding: 5px; font-weight: bold;")
+        self.export_combined_check.setToolTip("Export ไฟล์ MP4 ที่มีทั้ง Video + Audio รวมกัน พร้อมอัพ YouTube/Social ได้เลย")
+        options_layout.addWidget(self.export_combined_check)
+
+        combined_hint = QLabel("💡 ได้ไฟล์ MP4 พร้อมอัพ YouTube/TikTok/IG ได้เลย!")
+        combined_hint.setStyleSheet(f"color: {Colors.METER_GREEN}; font-size: 11px; padding-left: 20px;")
+        options_layout.addWidget(combined_hint)
+
         # Speed hint
         speed_hint = QLabel("💡 Export แค่ Audio จะเร็วกว่ามาก (~10 วินาที)")
-        speed_hint.setStyleSheet(f"color: {Colors.METER_GREEN}; font-size: 11px; padding-left: 20px;")
+        speed_hint.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: 11px; padding-left: 20px;")
         options_layout.addWidget(speed_hint)
         
         # Separator
@@ -9715,9 +9996,10 @@ class LongPlayStudioV4(QMainWindow):
         format_layout = QVBoxLayout(format_group)
         
         format_info = QLabel(
+            "🎬 [ชื่อ].mp4 - Combined (Video + Audio) พร้อมอัพได้เลย\n"
             "📹 [ชื่อ]_video.mp4 - Video only (ไม่มีเสียง)\n"
             "🎵 [ชื่อ]_audio.wav - Audio only (24-bit, 48kHz)\n\n"
-            "💡 แยกไฟล์เพื่อนำไป Mastering แล้วรวมใน DAW/Editor"
+            "💡 เลือก Combined เพื่อได้ไฟล์เดียวพร้อมใช้งาน"
         )
         format_info.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; line-height: 1.5;")
         format_info.setWordWrap(True)
@@ -9770,6 +10052,7 @@ class LongPlayStudioV4(QMainWindow):
         # Get export options
         export_audio = self.export_audio_check.isChecked()
         export_video = self.export_video_check.isChecked()
+        export_combined = self.export_combined_check.isChecked()  # NEW V5.6!
         batch_export = self.batch_export_check.isChecked()  # NEW V4.26!
         seamless_loop = self.seamless_loop_check.isChecked()  # NEW V4.26!
         
@@ -9778,9 +10061,13 @@ class LongPlayStudioV4(QMainWindow):
         quality_modes = ["fast", "balanced", "quality"]
         set_quality_mode(quality_modes[quality_index])
         
-        if not export_audio and not export_video:
-            QMessageBox.warning(self, "⚠️ Warning", "กรุณาเลือกอย่างน้อย 1 อย่าง (Audio หรือ Video)")
+        if not export_audio and not export_video and not export_combined:
+            QMessageBox.warning(self, "⚠️ Warning", "กรุณาเลือกอย่างน้อย 1 อย่าง (Audio, Video หรือ Combined)")
             return
+
+        # If combined is checked, we need both audio and video processing
+        if export_combined:
+            export_video = True  # Force video processing for combined
         
         # V4.27: Check if all files still exist before export
         missing_files = []
@@ -9847,6 +10134,7 @@ class LongPlayStudioV4(QMainWindow):
         # Generate filenames
         video_path = os.path.join(output_dir, f"{base_name}_video.mp4") if export_video else None
         audio_path = os.path.join(output_dir, f"{base_name}_audio.wav") if export_audio else None
+        combined_path = os.path.join(output_dir, f"{base_name}.mp4") if export_combined else None
         
         # Show progress dialog with detailed status
         self.export_dialog = QDialog(self)
@@ -9858,7 +10146,10 @@ class LongPlayStudioV4(QMainWindow):
         progress_layout.setSpacing(15)
         
         # Title
-        export_type = "Audio + Video" if (export_audio and export_video) else ("Audio Only" if export_audio else "Video Only")
+        if export_combined:
+            export_type = "Combined MP4" + (" + Separate Files" if (export_audio or (export_video and not export_combined)) else "")
+        else:
+            export_type = "Audio + Video" if (export_audio and export_video) else ("Audio Only" if export_audio else "Video Only")
         title_label = QLabel(f"🚀 Exporting ({export_type})")
         title_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {Colors.ACCENT};")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -9961,7 +10252,7 @@ class LongPlayStudioV4(QMainWindow):
         self.export_timer.start(1000)  # Update every second
         
         try:
-            self._do_export_separate(video_path, audio_path, output_dir, export_video, export_audio)
+            self._do_export_separate(video_path, audio_path, output_dir, export_video, export_audio, combined_path)
             self.export_timer.stop()
             self.export_dialog.close()
             
@@ -10332,8 +10623,9 @@ class LongPlayStudioV4(QMainWindow):
             shutil.rmtree(temp_dir, ignore_errors=True)
             
     def _do_export_separate(self, video_output: str, audio_output: str, output_dir: str,
-                           export_video: bool = True, export_audio: bool = True):
-        """Export separate video (no audio) and audio (crossfaded) files"""
+                           export_video: bool = True, export_audio: bool = True,
+                           combined_output: str = None):
+        """Export separate video (no audio), audio (crossfaded), and/or combined MP4 files"""
         # Check disk space before starting export
         try:
             usage = shutil.disk_usage(output_dir)
@@ -10356,6 +10648,8 @@ class LongPlayStudioV4(QMainWindow):
             total_steps += 1
         if export_video:
             total_steps += 2  # Process + Encode video
+        if combined_output:
+            total_steps += 1  # Mux video + audio into combined MP4
 
         current_step = 0
 
@@ -10479,50 +10773,86 @@ class LongPlayStudioV4(QMainWindow):
             
             self._update_export_status(current_step, total_steps, "🎬 Video processing complete!", 75)
             
-            # ========== STEP 4: Export Video File (NO AUDIO) ==========
-            current_step += 1
-            
-            # V4.25.10: Check if we need to re-encode or can use stream copy
-            # Re-encode only if: overlay was applied OR resolution needs changing
-            needs_reencode = has_gif or has_logo
-            
-            if needs_reencode:
-                hw_status = "GPU" if HW_ENCODER != "libx264" else "CPU"
-                self._update_export_status(current_step, total_steps, f"📹 Encoding final video ({hw_status})...", 80)
-                
-                # Build command with hardware encoder
-                cmd = [
-                    "ffmpeg", "-y", "-threads", "0",
-                    "-i", final_video,
-                    "-an",  # NO AUDIO - separate export
-                ] + get_encoder_params() + [video_output]
-                
-                subprocess.run(cmd, check=True, capture_output=True)
-            else:
-                # Stream copy - INSTANT! (no overlay, no re-encode needed)
-                self._update_export_status(current_step, total_steps, "🚀 Copying video (stream copy - instant!)...", 80)
-                
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-i", final_video,
-                    "-an",  # NO AUDIO
-                    "-c", "copy",  # Stream copy = instant!
-                    video_output
-                ]
-                
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    print(f"[EXPORT] Stream copy failed, falling back to encode: {result.stderr}")
-                    # Fallback to encode if stream copy fails
-                    cmd_encode = [
+            # ========== STEP 4: Export Video File (NO AUDIO) — skip if only combined ==========
+            if video_output:
+                current_step += 1
+
+                # V4.25.10: Check if we need to re-encode or can use stream copy
+                needs_reencode = has_gif or has_logo
+
+                if needs_reencode:
+                    hw_status = "GPU" if HW_ENCODER != "libx264" else "CPU"
+                    self._update_export_status(current_step, total_steps, f"📹 Encoding final video ({hw_status})...", 80)
+
+                    cmd = [
                         "ffmpeg", "-y", "-threads", "0",
                         "-i", final_video,
-                        "-an",
+                        "-an",  # NO AUDIO - separate export
                     ] + get_encoder_params() + [video_output]
-                    subprocess.run(cmd_encode, check=True, capture_output=True)
+
+                    subprocess.run(cmd, check=True, capture_output=True)
+                else:
+                    # Stream copy - INSTANT!
+                    self._update_export_status(current_step, total_steps, "🚀 Copying video (stream copy - instant!)...", 80)
+
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", final_video,
+                        "-an",  # NO AUDIO
+                        "-c", "copy",
+                        video_output
+                    ]
+
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"[EXPORT] Stream copy failed, falling back to encode: {result.stderr}")
+                        cmd_encode = [
+                            "ffmpeg", "-y", "-threads", "0",
+                            "-i", final_video,
+                            "-an",
+                        ] + get_encoder_params() + [video_output]
+                        subprocess.run(cmd_encode, check=True, capture_output=True)
             
+            # ========== STEP 5: Combined MP4 (Video + Audio) - if requested ==========
+            if combined_output and mixed_audio:
+                current_step += 1
+                self._update_export_status(current_step, total_steps, "🎬 Muxing Video + Audio into combined MP4...", 90)
+
+                # Use the final_video (with overlays) and mixed_audio (with gain)
+                # Mux with AAC audio for maximum compatibility
+                mux_cmd = [
+                    "ffmpeg", "-y", "-threads", "0",
+                    "-i", final_video,
+                    "-i", mixed_audio,
+                    "-c:v", "copy",        # Copy video stream (no re-encode!)
+                    "-c:a", "aac",         # AAC audio for MP4 compatibility
+                    "-b:a", "320k",        # High quality audio
+                    "-ar", "48000",        # 48kHz sample rate
+                    "-shortest",           # Match shortest stream
+                    "-movflags", "+faststart",  # Web-optimized MP4
+                    combined_output
+                ]
+
+                result = subprocess.run(mux_cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"[EXPORT] Stream copy mux failed, falling back to encode: {result.stderr}")
+                    # Fallback: re-encode video if stream copy fails
+                    mux_cmd_encode = [
+                        "ffmpeg", "-y", "-threads", "0",
+                        "-i", final_video,
+                        "-i", mixed_audio,
+                    ] + get_encoder_params() + [
+                        "-c:a", "aac", "-b:a", "320k", "-ar", "48000",
+                        "-shortest", "-movflags", "+faststart",
+                        combined_output
+                    ]
+                    subprocess.run(mux_cmd_encode, check=True, capture_output=True)
+
+                combined_size = os.path.getsize(combined_output) / (1024 * 1024)
+                print(f"[EXPORT] ✅ Combined MP4: {combined_output} ({combined_size:.1f} MB)")
+
             self._update_export_status(current_step, total_steps, "✅ Export complete!", 100)
-            
+
         finally:
             # Cleanup
             shutil.rmtree(temp_dir, ignore_errors=True)

@@ -9,141 +9,155 @@ Each profile contains target values for all mastering modules.
 # Maps to different limiter behavior characteristics via FFmpeg alimiter
 
 IRC_MODES = {
-    # --- IRC 1: Transparent, minimal coloration ---
+    # ══════════════════════════════════════════════════
+    #  IRC MODES — matching iZotope Ozone 12 exactly
+    #  6 modes: IRC 1-5 + IRC LL
+    #  Sub-modes ONLY on IRC 3 & IRC 4 (3 each: Pumping/Balanced/Crisp)
+    # ══════════════════════════════════════════════════
+
+    # --- IRC 1: Transparent peak limiter ---
+    # Algorithm: Simple look-ahead brickwall. No spectral weighting.
+    # Similar to: Waves L1/L2 transparent, FabFilter Pro-L "Safe"
     "IRC 1": {
         "name": "IRC 1",
-        "description": "Transparent limiting. Minimal coloration, preserves dynamics. Best for acoustic/jazz.",
-        "attack": 0.1,       # ms
-        "release": 200,      # ms
-        "lookahead": 5,      # ms
-        "knee": 0.5,         # dB
+        "description": "Transparent — Clean peak limiting with minimal coloration. Best for acoustic/jazz.",
+        "attack": 5.0,
+        "release": 200,
+        "lookahead": 10,
+        "knee": 0.5,
         "level_in": 1.0,
-        "sub_modes": [],     # no sub-modes
+        "sub_modes": [],
+        "algorithm": "peak_limiter",
     },
-    # --- IRC 2: Balanced all-purpose ---
+    # --- IRC 2: Program-dependent adaptive release ---
+    # Algorithm: Dual-envelope follower. Release adapts to signal content.
+    # Similar to: FabFilter Pro-L "Modern", Sonnox Oxford Limiter
     "IRC 2": {
         "name": "IRC 2",
-        "description": "Balanced limiting. Good loudness and clarity. All-purpose mastering.",
-        "attack": 0.5,
+        "description": "Adaptive — Program-dependent release for musical results. All-purpose mastering.",
+        "attack": 3.0,
         "release": 100,
         "lookahead": 5,
         "knee": 1.0,
         "level_in": 1.0,
         "sub_modes": [],
+        "algorithm": "adaptive_release",
     },
-    # --- IRC 3: Musical with 4 sub-modes ---
+    # --- IRC 3: Multi-band frequency-weighted limiter (MOST POPULAR) ---
+    # Algorithm: 4-band crossover (120/1k/8k Hz), independent limiter per band.
+    # Similar to: Ozone Maximizer default, Waves L3 Multimaximizer
     "IRC 3": {
         "name": "IRC 3",
-        "description": "Musical limiting with character options.",
-        "attack": 1.0,
-        "release": 60,
-        "lookahead": 3,
+        "description": "Multi-band — Frequency-weighted limiting, spectral preservation.",
+        "attack": 3.0,
+        "release": 120,
+        "lookahead": 5,
         "knee": 2.0,
         "level_in": 1.05,
-        "sub_modes": ["Pumping", "Balanced", "Crisp", "Clipping"],
+        "sub_modes": ["Pumping", "Balanced", "Crisp"],
+        "algorithm": "multiband_limiter",
     },
     "IRC 3 - Pumping": {
         "name": "IRC 3 — Pumping",
-        "description": "Rhythmic pumping character. Great for dance music and EDM.",
+        "description": "Fast release — audible pump, great for EDM/Dance music.",
         "attack": 3.0,
-        "release": 25,
-        "lookahead": 3,
+        "release": 48,
+        "lookahead": 5,
         "knee": 4.0,
         "level_in": 1.1,
         "parent": "IRC 3",
     },
     "IRC 3 - Balanced": {
         "name": "IRC 3 — Balanced",
-        "description": "Even-handed limiting. Smooth and musical across all genres.",
-        "attack": 1.0,
-        "release": 60,
-        "lookahead": 3,
+        "description": "Natural release — default for most material. Smooth and musical.",
+        "attack": 3.0,
+        "release": 120,
+        "lookahead": 5,
         "knee": 2.0,
         "level_in": 1.05,
         "parent": "IRC 3",
     },
     "IRC 3 - Crisp": {
         "name": "IRC 3 — Crisp",
-        "description": "Bright and detailed. Preserves transient clarity and air.",
-        "attack": 0.5,
-        "release": 80,
-        "lookahead": 4,
+        "description": "Transient-preserving — best for acoustic/vocal/jazz. Keeps snap and detail.",
+        "attack": 3.0,
+        "release": 216,
+        "lookahead": 10,
         "knee": 1.5,
         "level_in": 1.05,
         "parent": "IRC 3",
     },
-    "IRC 3 - Clipping": {
-        "name": "IRC 3 — Clipping",
-        "description": "Hard clipping style. Aggressive loudness with saturation edge.",
-        "attack": 0.1,
-        "release": 15,
-        "lookahead": 1,
-        "knee": 6.0,
-        "level_in": 1.15,
-        "parent": "IRC 3",
-    },
-    # --- IRC 4: Aggressive with 3 sub-modes ---
+    # --- IRC 4: Aggressive saturation + limiting ---
+    # Algorithm: 3-stage: harmonic saturation → soft clip → brickwall limiter.
+    # Similar to: Slate FG-X, Waves L2, FabFilter Pro-L "Aggressive"
     "IRC 4": {
         "name": "IRC 4",
-        "description": "Aggressive limiting with character control.",
-        "attack": 0.3,
-        "release": 30,
-        "lookahead": 2,
+        "description": "Aggressive — Saturation + limiting for maximum loudness with character.",
+        "attack": 0.5,
+        "release": 50,
+        "lookahead": 3,
         "knee": 3.0,
         "level_in": 1.1,
-        "sub_modes": ["Classic", "Modern", "Transient"],
+        "sub_modes": ["Pumping", "Balanced", "Crisp"],
+        "algorithm": "aggressive_saturate",
     },
-    "IRC 4 - Classic": {
-        "name": "IRC 4 — Classic",
-        "description": "Classic aggressive limiter. Warm and punchy, vintage vibe.",
+    "IRC 4 - Pumping": {
+        "name": "IRC 4 — Pumping",
+        "description": "Fast aggressive release — pumping loudness for electronic music.",
         "attack": 0.5,
-        "release": 40,
+        "release": 20,
         "lookahead": 3,
         "knee": 3.0,
         "level_in": 1.1,
         "parent": "IRC 4",
     },
-    "IRC 4 - Modern": {
-        "name": "IRC 4 — Modern",
-        "description": "Modern aggressive limiting. Clean loudness for streaming.",
-        "attack": 0.2,
-        "release": 25,
-        "lookahead": 2,
+    "IRC 4 - Balanced": {
+        "name": "IRC 4 — Balanced",
+        "description": "Balanced aggression — loud but controlled. Great for pop/rock.",
+        "attack": 0.5,
+        "release": 50,
+        "lookahead": 3,
         "knee": 3.5,
         "level_in": 1.12,
         "parent": "IRC 4",
     },
-    "IRC 4 - Transient": {
-        "name": "IRC 4 — Transient",
-        "description": "Transient-preserving aggression. Keeps punch while pushing loud.",
-        "attack": 0.8,
-        "release": 20,
-        "lookahead": 2,
+    "IRC 4 - Crisp": {
+        "name": "IRC 4 — Crisp",
+        "description": "Aggressive with transient snap — punch + loudness for drums/bass.",
+        "attack": 0.5,
+        "release": 90,
+        "lookahead": 5,
         "knee": 2.5,
         "level_in": 1.1,
         "parent": "IRC 4",
     },
-    # --- IRC 5: Maximum loudness ---
+    # --- IRC 5: Maximum Density (NEW - Ozone 12) ---
+    # Algorithm: 4-band compression (upward + downward) → 4-band limiting.
+    # Similar to: No direct equivalent — Ozone 12 exclusive
     "IRC 5": {
         "name": "IRC 5",
-        "description": "Maximum loudness. Heavy limiting for modern pop/EDM/trap.",
-        "attack": 0.1,
-        "release": 15,
-        "lookahead": 1,
+        "description": "Maximum Density — Multi-band compression + limiting, loudest possible.",
+        "attack": 2.0,
+        "release": 100,
+        "lookahead": 5,
         "knee": 6.0,
         "level_in": 1.2,
         "sub_modes": [],
+        "algorithm": "maximum_density",
     },
-    # --- IRC Low Latency: Real-time monitoring ---
+    # --- IRC LL: Low Latency ---
+    # Algorithm: Zero-lookahead feedback limiter. Very fast attack.
+    # Similar to: Waves L1+ low-latency, Plugin Alliance bx_limiter
     "IRC LL": {
-        "name": "IRC Low Latency",
-        "description": "Low latency mode for real-time monitoring. Minimal lookahead.",
-        "attack": 0.1,
-        "release": 50,
-        "lookahead": 0.5,
+        "name": "IRC LL",
+        "description": "Low Latency — Zero-lookahead for real-time monitoring. Fast response.",
+        "attack": 0.05,
+        "release": 30,
+        "lookahead": 0,
         "knee": 1.5,
         "level_in": 1.0,
         "sub_modes": [],
+        "algorithm": "feedback_limiter",
     },
 }
 
@@ -953,3 +967,276 @@ def get_irc_sub_modes(mode_name):
 def get_tone_preset(tone_name):
     """Get tone preset parameters."""
     return TONE_PRESETS.get(tone_name, TONE_PRESETS["Transparent"])
+
+
+# ══════════════════════════════════════════════════════════════
+#  MASTERING PRESETS — 15 One-Click Presets
+#  Dynamics + Imager + Maximizer ONLY (No EQ — Suno tone is good)
+#  Each preset is designed for a specific use case / genre feel.
+# ══════════════════════════════════════════════════════════════
+
+MASTERING_PRESETS = {
+    # ─── TRANSPARENT / REFERENCE ───
+    "Transparent Master": {
+        "description": "Clean, transparent mastering — preserves original mix character",
+        "category": "Reference",
+        "dynamics": {
+            "threshold": -18, "ratio": 1.5, "attack": 20, "release": 200,
+            "makeup": 1.0, "knee": 6,
+        },
+        "imager": {"width": 105, "mono_bass_freq": 0},
+        "maximizer": {
+            "gain_db": 3.0, "ceiling": -1.0, "character": 2.0,
+            "irc_mode": "IRC 1", "irc_sub_mode": None,
+            "transient_emphasis_pct": 0, "upward_compress_db": 0,
+            "soft_clip_enabled": False,
+        },
+    },
+
+    "Streaming Optimized": {
+        "description": "Balanced loudness for Spotify/Apple Music/YouTube (-14 LUFS target)",
+        "category": "Reference",
+        "dynamics": {
+            "threshold": -16, "ratio": 2.0, "attack": 15, "release": 150,
+            "makeup": 1.5, "knee": 4,
+        },
+        "imager": {"width": 115, "mono_bass_freq": 100},
+        "maximizer": {
+            "gain_db": 5.0, "ceiling": -1.0, "character": 3.0,
+            "irc_mode": "IRC 3", "irc_sub_mode": "Balanced",
+            "transient_emphasis_pct": 10, "upward_compress_db": 0,
+            "soft_clip_enabled": False,
+        },
+    },
+
+    # ─── POP / MAINSTREAM ───
+    "Pop Radio Ready": {
+        "description": "Loud, polished, radio-ready pop mastering",
+        "category": "Pop",
+        "dynamics": {
+            "threshold": -12, "ratio": 3.0, "attack": 8, "release": 80,
+            "makeup": 3.0, "knee": 3,
+        },
+        "imager": {"width": 130, "mono_bass_freq": 150},
+        "maximizer": {
+            "gain_db": 7.5, "ceiling": -0.5, "character": 4.5,
+            "irc_mode": "IRC 3", "irc_sub_mode": "Balanced",
+            "transient_emphasis_pct": 15, "upward_compress_db": 1.0,
+            "soft_clip_enabled": True, "soft_clip_pct": 20,
+        },
+    },
+
+    "K-Pop Bright": {
+        "description": "Bright, wide, punchy — K-Pop / J-Pop style mastering",
+        "category": "Pop",
+        "dynamics": {
+            "threshold": -14, "ratio": 2.5, "attack": 5, "release": 60,
+            "makeup": 2.5, "knee": 3,
+        },
+        "imager": {"width": 145, "mono_bass_freq": 120},
+        "maximizer": {
+            "gain_db": 7.0, "ceiling": -0.5, "character": 5.0,
+            "irc_mode": "IRC 3", "irc_sub_mode": "Crisp",
+            "transient_emphasis_pct": 25, "upward_compress_db": 1.5,
+            "soft_clip_enabled": False,
+        },
+    },
+
+    # ─── HIP-HOP / R&B ───
+    "Hip-Hop Loud": {
+        "description": "Heavy, loud mastering — trap, hip-hop, drill",
+        "category": "Hip-Hop",
+        "dynamics": {
+            "threshold": -10, "ratio": 4.0, "attack": 3, "release": 40,
+            "makeup": 4.0, "knee": 2,
+        },
+        "imager": {"width": 120, "mono_bass_freq": 200},
+        "maximizer": {
+            "gain_db": 9.0, "ceiling": -0.3, "character": 6.5,
+            "irc_mode": "IRC 4", "irc_sub_mode": "Pumping",
+            "transient_emphasis_pct": 20, "upward_compress_db": 2.0,
+            "soft_clip_enabled": True, "soft_clip_pct": 35,
+        },
+    },
+
+    "R&B Smooth": {
+        "description": "Smooth, warm, controlled — R&B / Neo Soul",
+        "category": "Hip-Hop",
+        "dynamics": {
+            "threshold": -16, "ratio": 2.0, "attack": 15, "release": 120,
+            "makeup": 2.0, "knee": 6,
+        },
+        "imager": {"width": 125, "mono_bass_freq": 100},
+        "maximizer": {
+            "gain_db": 5.5, "ceiling": -1.0, "character": 2.5,
+            "irc_mode": "IRC 2", "irc_sub_mode": None,
+            "transient_emphasis_pct": 5, "upward_compress_db": 0.5,
+            "soft_clip_enabled": False,
+        },
+    },
+
+    # ─── ELECTRONIC / EDM ───
+    "EDM Banger": {
+        "description": "Maximum loudness & energy — EDM, house, techno",
+        "category": "Electronic",
+        "dynamics": {
+            "threshold": -8, "ratio": 5.0, "attack": 1, "release": 30,
+            "makeup": 5.0, "knee": 1,
+        },
+        "imager": {"width": 155, "mono_bass_freq": 180},
+        "maximizer": {
+            "gain_db": 10.0, "ceiling": -0.3, "character": 7.5,
+            "irc_mode": "IRC 4", "irc_sub_mode": "Pumping",
+            "transient_emphasis_pct": 10, "upward_compress_db": 3.0,
+            "soft_clip_enabled": True, "soft_clip_pct": 50,
+        },
+    },
+
+    "Lo-Fi Chill": {
+        "description": "Warm, compressed, cozy — lo-fi beats, chillhop",
+        "category": "Electronic",
+        "dynamics": {
+            "threshold": -14, "ratio": 3.5, "attack": 25, "release": 250,
+            "makeup": 2.5, "knee": 8,
+        },
+        "imager": {"width": 110, "mono_bass_freq": 80},
+        "maximizer": {
+            "gain_db": 4.0, "ceiling": -1.5, "character": 2.0,
+            "irc_mode": "IRC 2", "irc_sub_mode": None,
+            "transient_emphasis_pct": 0, "upward_compress_db": 1.0,
+            "soft_clip_enabled": True, "soft_clip_pct": 15,
+        },
+    },
+
+    # ─── ROCK / METAL ───
+    "Rock Punchy": {
+        "description": "Punchy, dynamic mastering — rock, alternative, indie",
+        "category": "Rock",
+        "dynamics": {
+            "threshold": -14, "ratio": 3.0, "attack": 10, "release": 60,
+            "makeup": 3.0, "knee": 2,
+        },
+        "imager": {"width": 125, "mono_bass_freq": 120},
+        "maximizer": {
+            "gain_db": 6.5, "ceiling": -0.5, "character": 5.0,
+            "irc_mode": "IRC 3", "irc_sub_mode": "Crisp",
+            "transient_emphasis_pct": 30, "upward_compress_db": 0.5,
+            "soft_clip_enabled": False,
+        },
+    },
+
+    "Metal Wall": {
+        "description": "Brick-wall loud — metal, hardcore, heavy rock",
+        "category": "Rock",
+        "dynamics": {
+            "threshold": -8, "ratio": 6.0, "attack": 1, "release": 25,
+            "makeup": 5.0, "knee": 0,
+        },
+        "imager": {"width": 135, "mono_bass_freq": 150},
+        "maximizer": {
+            "gain_db": 10.0, "ceiling": -0.3, "character": 8.0,
+            "irc_mode": "IRC 5", "irc_sub_mode": None,
+            "transient_emphasis_pct": 15, "upward_compress_db": 3.0,
+            "soft_clip_enabled": True, "soft_clip_pct": 40,
+        },
+    },
+
+    # ─── ACOUSTIC / JAZZ / CLASSICAL ───
+    "Acoustic Natural": {
+        "description": "Minimal processing — acoustic, folk, singer-songwriter",
+        "category": "Acoustic",
+        "dynamics": {
+            "threshold": -22, "ratio": 1.3, "attack": 30, "release": 300,
+            "makeup": 0.5, "knee": 8,
+        },
+        "imager": {"width": 105, "mono_bass_freq": 0},
+        "maximizer": {
+            "gain_db": 2.0, "ceiling": -1.5, "character": 1.0,
+            "irc_mode": "IRC 1", "irc_sub_mode": None,
+            "transient_emphasis_pct": 0, "upward_compress_db": 0,
+            "soft_clip_enabled": False,
+        },
+    },
+
+    "Jazz Open": {
+        "description": "Open, dynamic, spacious — jazz, classical, ambient",
+        "category": "Acoustic",
+        "dynamics": {
+            "threshold": -20, "ratio": 1.5, "attack": 25, "release": 250,
+            "makeup": 1.0, "knee": 10,
+        },
+        "imager": {"width": 130, "mono_bass_freq": 0},
+        "maximizer": {
+            "gain_db": 2.5, "ceiling": -1.0, "character": 1.5,
+            "irc_mode": "IRC 1", "irc_sub_mode": None,
+            "transient_emphasis_pct": 5, "upward_compress_db": 0,
+            "soft_clip_enabled": False,
+        },
+    },
+
+    # ─── SPECIAL USE CASES ───
+    "Vocal Focus": {
+        "description": "Vocal-forward mastering — podcasts, vocal covers, spoken word",
+        "category": "Special",
+        "dynamics": {
+            "threshold": -18, "ratio": 2.5, "attack": 10, "release": 100,
+            "makeup": 2.0, "knee": 5,
+        },
+        "imager": {"width": 90, "mono_bass_freq": 0},
+        "maximizer": {
+            "gain_db": 4.5, "ceiling": -1.0, "character": 3.0,
+            "irc_mode": "IRC 2", "irc_sub_mode": None,
+            "transient_emphasis_pct": 10, "upward_compress_db": 1.0,
+            "soft_clip_enabled": False,
+        },
+    },
+
+    "TikTok / Reels": {
+        "description": "Phone-optimized — loud, punchy, mono-compatible for social media",
+        "category": "Special",
+        "dynamics": {
+            "threshold": -12, "ratio": 3.5, "attack": 5, "release": 50,
+            "makeup": 3.5, "knee": 2,
+        },
+        "imager": {"width": 100, "mono_bass_freq": 200},
+        "maximizer": {
+            "gain_db": 8.0, "ceiling": -0.5, "character": 5.5,
+            "irc_mode": "IRC 3", "irc_sub_mode": "Balanced",
+            "transient_emphasis_pct": 20, "upward_compress_db": 2.0,
+            "soft_clip_enabled": True, "soft_clip_pct": 25,
+        },
+    },
+
+    "Maximum Density": {
+        "description": "Absolute maximum loudness — competition masters, DJ edits",
+        "category": "Special",
+        "dynamics": {
+            "threshold": -6, "ratio": 8.0, "attack": 0.5, "release": 20,
+            "makeup": 6.0, "knee": 0,
+        },
+        "imager": {"width": 120, "mono_bass_freq": 200},
+        "maximizer": {
+            "gain_db": 12.0, "ceiling": -0.1, "character": 9.0,
+            "irc_mode": "IRC 5", "irc_sub_mode": None,
+            "transient_emphasis_pct": 5, "upward_compress_db": 4.0,
+            "soft_clip_enabled": True, "soft_clip_pct": 60,
+        },
+    },
+}
+
+MASTERING_PRESET_NAMES = list(MASTERING_PRESETS.keys())
+
+MASTERING_PRESET_CATEGORIES = {
+    "Reference": ["Transparent Master", "Streaming Optimized"],
+    "Pop": ["Pop Radio Ready", "K-Pop Bright"],
+    "Hip-Hop": ["Hip-Hop Loud", "R&B Smooth"],
+    "Electronic": ["EDM Banger", "Lo-Fi Chill"],
+    "Rock": ["Rock Punchy", "Metal Wall"],
+    "Acoustic": ["Acoustic Natural", "Jazz Open"],
+    "Special": ["Vocal Focus", "TikTok / Reels", "Maximum Density"],
+}
+
+
+def get_mastering_preset(name):
+    """Get a mastering preset by name."""
+    return MASTERING_PRESETS.get(name, MASTERING_PRESETS["Streaming Optimized"])

@@ -46,7 +46,8 @@ from .chain import MasterChain
 # All playback now uses offline rendering + QMediaPlayer (Export-Parity architecture)
 from .genre_profiles import (
     GENRE_PROFILES, PLATFORM_TARGETS, IRC_MODES, IRC_TOP_MODES, TONE_PRESETS,
-    get_genre_list, get_irc_sub_modes,
+    MASTERING_PRESETS, MASTERING_PRESET_NAMES, MASTERING_PRESET_CATEGORIES,
+    get_genre_list, get_irc_sub_modes, get_mastering_preset,
 )
 from .equalizer import EQ_TONE_PRESETS
 from .dynamics import DYNAMICS_PRESETS
@@ -1806,6 +1807,451 @@ class HardwareDecoration(QWidget):
 
 
 # ══════════════════════════════════════════════════
+#  Waves WLM Plus-Style Loudness Meter
+# ══════════════════════════════════════════════════
+class WavesWLMMeter(QWidget):
+    """
+    V5.7 Waves WLM Plus-style loudness meter — matches the official Waves WLM Plus layout.
+
+    Layout (top to bottom):
+    ┌─────────────────────────────────────────┐
+    │  SHORT TERM │  LONG TERM  │   RANGE     │  ← 3 LCD boxes with big numbers
+    │    -15      │    -14      │     5       │
+    │  -14.9 LKFS│  -13.9 LKFS │    LU       │
+    ├─────────────────────────────────────────┤
+    │  Momentary  ████████████░░░░░  -9.3 LKFS│  ← horizontal bar + readout
+    ├─────────────────────────────────────────┤
+    │  True Peak  ██████████████░░░░  0.0 dBTP│  ← horizontal bar + readout
+    ├─────────────────────────────────────────┤
+    │  True Peak Limiter           GR: -1.9 dB│  ← limiter GR readout
+    └─────────────────────────────────────────┘
+    """
+
+    def __init__(self, parent=None, target_lufs=-14.0):
+        super().__init__(parent)
+        self.setFixedSize(270, 320)
+        self._target = target_lufs
+
+        # Current values
+        self._mom = -70.0
+        self._short = -70.0
+        self._int = -70.0
+        self._lra = 0.0
+        self._tp_l = -70.0
+        self._tp_r = -70.0
+        self._gr = 0.0  # Gain reduction dB
+        self._max_mom = -70.0
+        self._max_short = -70.0
+        self._max_tp = -70.0
+
+    def set_levels(self, momentary=-70.0, short_term=-70.0, integrated=-70.0,
+                   lra=0.0, tp_left=-70.0, tp_right=-70.0):
+        self._mom = max(-60.0, min(6.0, momentary))
+        self._short = max(-60.0, min(6.0, short_term))
+        self._int = max(-60.0, min(6.0, integrated))
+        self._lra = max(0.0, min(30.0, lra))
+        self._tp_l = max(-60.0, min(6.0, tp_left))
+        self._tp_r = max(-60.0, min(6.0, tp_right))
+        if self._mom > self._max_mom:
+            self._max_mom = self._mom
+        if self._short > self._max_short:
+            self._max_short = self._short
+        tp_max = max(self._tp_l, self._tp_r)
+        if tp_max > self._max_tp:
+            self._max_tp = tp_max
+        self.update()
+
+    def set_gr(self, gr_db: float):
+        """Set gain reduction (positive value)."""
+        self._gr = max(0.0, min(20.0, abs(gr_db)))
+        self.update()
+
+    def set_target(self, target_lufs=-14.0):
+        self._target = target_lufs
+        self.update()
+
+    def reset(self):
+        self._mom = self._short = self._int = -70.0
+        self._lra = 0.0
+        self._tp_l = self._tp_r = -70.0
+        self._gr = 0.0
+        self._max_mom = self._max_short = self._max_tp = -70.0
+        self.update()
+
+    def _lufs_color(self, lufs):
+        if lufs > self._target + 2.0:
+            return QColor("#E53935")
+        elif lufs > self._target + 0.5:
+            return QColor("#F39C12")
+        elif lufs > self._target - 2.0:
+            return QColor("#43A047")
+        elif lufs > self._target - 6.0:
+            return QColor("#26A69A")
+        else:
+            return QColor("#42A5F5")
+
+    def _tp_color(self, tp_db):
+        if tp_db > -0.5:
+            return QColor(C_LED_RED)
+        elif tp_db > -1.5:
+            return QColor(C_LED_YELLOW)
+        else:
+            return QColor(C_LED_GREEN)
+
+    def _db_to_bar_ratio(self, db, lo=-60.0, hi=6.0):
+        return max(0.0, min(1.0, (db - lo) / (hi - lo)))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = self.width(), self.height()
+
+        # ── Background (Waves dark gray) ──
+        p.fillRect(0, 0, w, h, QColor("#2A2A2E"))
+        # Inner bevel
+        p.setPen(QPen(QColor("#1A1A1E"), 1))
+        p.drawRect(1, 1, w - 3, h - 3)
+        p.setPen(QPen(QColor("#3E3E44"), 1))
+        p.drawLine(2, 2, w - 3, 2)
+
+        # ═══ TOP: 3 LCD BOXES (Short Term | Long Term | Range) ═══
+        box_h = 68
+        box_y = 6
+        gap = 4
+        box_w = (w - 12 - gap * 2) // 3
+        boxes = [
+            ("SHORT TERM", self._short, "LKFS"),
+            ("LONG TERM", self._int, "LKFS"),
+            ("RANGE", self._lra, "LU"),
+        ]
+
+        for i, (label, val, unit) in enumerate(boxes):
+            bx = 6 + i * (box_w + gap)
+            # LCD background
+            p.fillRect(bx, box_y, box_w, box_h, QColor("#080808"))
+            p.setPen(QPen(QColor("#1A1A1E"), 1))
+            p.drawRect(bx, box_y, box_w, box_h)
+
+            # Label
+            p.setFont(QFont("Menlo", 7))
+            p.setPen(QColor("#888888"))
+            p.drawText(bx, box_y + 2, box_w, 12, Qt.AlignmentFlag.AlignCenter, label)
+
+            # Big number
+            if label == "RANGE":
+                val_text = f"{val:.0f}" if val > 0.01 else "0"
+                val_color = QColor("#E0E0E0")
+            else:
+                is_active = val > -69
+                val_text = f"{val:.0f}" if is_active else "--"
+                if is_active:
+                    val_color = QColor("#E53935") if val > self._target + 1 else QColor("#43A047")
+                else:
+                    val_color = QColor("#555555")
+
+            p.setFont(QFont("Menlo", 28, QFont.Weight.Bold))
+            p.setPen(val_color)
+            p.drawText(bx, box_y + 12, box_w, 36, Qt.AlignmentFlag.AlignCenter, val_text)
+
+            # Precise value + unit
+            if label != "RANGE":
+                precise = f"{val:.1f}" if val > -69 else "--.-"
+                p.setFont(QFont("Menlo", 8))
+                p.setPen(QColor("#888888"))
+                p.drawText(bx, box_y + box_h - 16, box_w, 14, Qt.AlignmentFlag.AlignCenter,
+                           f"{precise} {unit}")
+            else:
+                p.setFont(QFont("Menlo", 9))
+                p.setPen(QColor("#888888"))
+                p.drawText(bx, box_y + box_h - 16, box_w, 14, Qt.AlignmentFlag.AlignCenter, unit)
+
+        y = box_y + box_h + 8
+
+        # ═══ MOMENTARY BAR ═══
+        p.setFont(QFont("Menlo", 8))
+        p.setPen(QColor("#AAAAAA"))
+        p.drawText(6, y, "Momentary")
+        # Readout (right side)
+        mom_text = f"{self._mom:.1f}" if self._mom > -69 else "--.-"
+        mom_col = self._lufs_color(self._mom) if self._mom > -69 else QColor("#555555")
+        p.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        p.setPen(mom_col)
+        p.drawText(w - 80, y, 74, 14, Qt.AlignmentFlag.AlignRight, f"{mom_text}")
+        p.setFont(QFont("Menlo", 7))
+        p.setPen(QColor("#888888"))
+        p.drawText(w - 80, y, 74, 14, Qt.AlignmentFlag.AlignLeft, "LKFS")
+        y += 14
+
+        bar_x, bar_w, bar_h = 6, w - 12, 20
+        self._draw_meter_bar(p, bar_x, y, bar_w, bar_h, self._mom, self._max_mom, -53, 0)
+
+        # Scale labels
+        y += bar_h + 1
+        p.setFont(QFont("Menlo", 6))
+        p.setPen(QColor("#666666"))
+        for sv in [-48, -36, -24, -18, -14, -9, -6, 0]:
+            ratio = self._db_to_bar_ratio(sv, -53, 0)
+            sx = bar_x + int(ratio * bar_w)
+            p.drawText(sx - 6, y + 8, f"{sv}")
+        y += 14
+
+        # ═══ TRUE PEAK BAR ═══
+        p.setFont(QFont("Menlo", 8))
+        p.setPen(QColor("#AAAAAA"))
+        p.drawText(6, y, "True Peak")
+        tp_max = max(self._tp_l, self._tp_r)
+        tp_text = f"{tp_max:.1f}" if tp_max > -69 else "--.-"
+        tp_col = self._tp_color(tp_max) if tp_max > -69 else QColor("#555555")
+        p.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        p.setPen(tp_col)
+        p.drawText(w - 80, y, 74, 14, Qt.AlignmentFlag.AlignRight, tp_text)
+        p.setFont(QFont("Menlo", 7))
+        p.setPen(QColor("#888888"))
+        p.drawText(w - 80, y, 74, 14, Qt.AlignmentFlag.AlignLeft, "dBTP")
+        y += 14
+
+        self._draw_meter_bar(p, bar_x, y, bar_w, bar_h, tp_max, self._max_tp, -53, 3, is_tp=True)
+        y += bar_h + 6
+
+        # ═══ TRUE PEAK LIMITER / GR DISPLAY ═══
+        p.fillRect(6, y, w - 12, 40, QColor("#181818"))
+        p.setPen(QPen(QColor("#2A2A30"), 1))
+        p.drawRect(6, y, w - 12, 40)
+
+        p.setFont(QFont("Menlo", 8))
+        p.setPen(QColor("#AAAAAA"))
+        p.drawText(12, y + 4, "True Peak Limiter")
+
+        # GR readout
+        gr_text = f"-{self._gr:.1f}" if self._gr > 0.05 else "0.0"
+        gr_col = QColor(C_LED_RED) if self._gr > 6 else (
+            QColor(C_AMBER_GLOW) if self._gr > 3 else (
+                QColor(C_LED_GREEN) if self._gr > 0.1 else QColor("#555555")))
+        p.setFont(QFont("Menlo", 7))
+        p.setPen(QColor("#888888"))
+        p.drawText(w - 90, y + 4, "GR dB")
+        p.setFont(QFont("Menlo", 16, QFont.Weight.Bold))
+        p.setPen(gr_col)
+        p.drawText(w - 80, y + 14, 68, 22, Qt.AlignmentFlag.AlignRight, gr_text)
+
+        # GR mini bar
+        gr_bar_x = 12
+        gr_bar_w = w - 100
+        gr_bar_y = y + 22
+        p.fillRect(gr_bar_x, gr_bar_y, gr_bar_w, 10, QColor("#0A0A0A"))
+        if self._gr > 0.05:
+            gr_fill = min(1.0, self._gr / 20.0)
+            fill_w = int(gr_fill * gr_bar_w)
+            grad = QLinearGradient(gr_bar_x, 0, gr_bar_x + gr_bar_w, 0)
+            grad.setColorAt(0.0, QColor("#43A047"))
+            grad.setColorAt(0.5, QColor("#F39C12"))
+            grad.setColorAt(1.0, QColor("#E53935"))
+            p.fillRect(gr_bar_x, gr_bar_y, fill_w, 10, grad)
+        p.setPen(QPen(QColor("#2A2A30"), 1))
+        p.drawRect(gr_bar_x, gr_bar_y, gr_bar_w, 10)
+
+        y += 44
+
+        # ═══ TARGET BAR (bottom) ═══
+        p.fillRect(6, y, w - 12, 18, QColor("#111116"))
+        p.setPen(QPen(QColor("#2A2A30"), 1))
+        p.drawRect(6, y, w - 12, 18)
+        p.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
+        p.setPen(QColor(C_TEAL_GLOW))
+        p.drawText(6, y, w - 12, 18, Qt.AlignmentFlag.AlignCenter,
+                   f"TARGET: {self._target:.0f} LUFS")
+
+        p.end()
+
+    def _draw_meter_bar(self, p, x, y, w, h, value, peak, lo, hi, is_tp=False):
+        """Draw a Waves-style horizontal meter bar with multi-color segments."""
+        # Background
+        p.fillRect(x, y, w, h, QColor("#0A0A0A"))
+        p.setPen(QPen(QColor("#1A1A1E"), 1))
+        p.drawRect(x, y, w, h)
+
+        if value > lo:
+            ratio = self._db_to_bar_ratio(value, lo, hi)
+            fill_w = int(ratio * (w - 2))
+            if fill_w > 0:
+                # Multi-segment gradient (green → yellow → red)
+                grad = QLinearGradient(x + 1, 0, x + w - 1, 0)
+                grad.setColorAt(0.0, QColor("#43A047"))
+                grad.setColorAt(0.6, QColor("#43A047"))
+                grad.setColorAt(0.75, QColor("#FDD835"))
+                grad.setColorAt(0.9, QColor("#F39C12"))
+                grad.setColorAt(1.0, QColor("#E53935"))
+                p.fillRect(x + 1, y + 1, fill_w, h - 2, grad)
+
+        # Peak hold marker
+        if peak > lo:
+            pk_ratio = self._db_to_bar_ratio(peak, lo, hi)
+            pk_x = x + 1 + int(pk_ratio * (w - 2))
+            pk_col = QColor("#FFFFFF") if peak > hi - 1 else QColor("#CCCCCC")
+            p.setPen(QPen(pk_col, 2))
+            p.drawLine(pk_x, y + 1, pk_x, y + h - 1)
+
+        # Target line (only for LUFS bars, not TP)
+        if not is_tp:
+            tgt_ratio = self._db_to_bar_ratio(self._target, lo, hi)
+            tgt_x = x + 1 + int(tgt_ratio * (w - 2))
+            p.setPen(QPen(QColor("#48CAE4"), 2))
+            p.drawLine(tgt_x, y, tgt_x, y + h)
+
+
+# ══════════════════════════════════════════════════
+#  Gain Reduction History — Ozone 12 Style
+# ══════════════════════════════════════════════════
+class GainReductionHistoryWidget(QWidget):
+    """
+    V5.6 Ozone 12-style Gain Reduction display.
+
+    Features:
+    - Scrolling waveform-style GR history (newest on right)
+    - Teal filled area showing GR depth over time
+    - Current GR value in large bold text
+    - Peak GR indicator with hold
+    - Scale: 0 dB (top) to -20 dB (bottom)
+    - Smooth animation with gradient fill
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(260, 100)
+
+        self._current_gr = 0.0      # Current GR in positive dB
+        self._peak_gr = 0.0         # Peak GR hold
+        self._history = [0.0] * 120  # GR history (120 samples)
+        self._max_gr = 20.0         # Scale max
+
+    def set_gr(self, gr_db: float):
+        """Set current gain reduction (positive value, e.g., 3.5 means -3.5 dB)."""
+        self._current_gr = max(0.0, min(self._max_gr, abs(gr_db)))
+        if self._current_gr > self._peak_gr:
+            self._peak_gr = self._current_gr
+        self._history.append(self._current_gr)
+        if len(self._history) > 120:
+            self._history.pop(0)
+        self.update()
+
+    def reset(self):
+        self._current_gr = 0.0
+        self._peak_gr = 0.0
+        self._history = [0.0] * 120
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = self.width(), self.height()
+
+        # ── Background ──
+        p.fillRect(0, 0, w, h, QColor("#0C0C0E"))
+        p.setPen(QPen(QColor("#1A1A20"), 1))
+        p.drawRect(1, 1, w - 3, h - 3)
+
+        # Layout
+        label_w = 50
+        graph_x = label_w
+        graph_w = w - label_w - 8
+        graph_y = 4
+        graph_h = h - 8
+
+        # ── dB scale (left) ──
+        p.setFont(QFont("Menlo", 7))
+        scale_vals = [0, -3, -6, -10, -15, -20]
+        for db in scale_vals:
+            ratio = abs(db) / self._max_gr
+            y = graph_y + int(ratio * graph_h)
+            if y > graph_y + graph_h:
+                continue
+            p.setPen(QColor(C_CREAM_DIM))
+            p.drawText(2, y + 3, f"{db:>3}")
+            # Grid line (subtle)
+            p.setPen(QPen(QColor("#1A1A20"), 1, Qt.PenStyle.DotLine))
+            p.drawLine(graph_x, y, graph_x + graph_w, y)
+
+        # ── GR waveform (filled area) ──
+        num_points = len(self._history)
+        if num_points > 1 and graph_w > 0:
+            step_x = graph_w / (num_points - 1) if num_points > 1 else graph_w
+
+            # Build path
+            path = QPainterPath()
+            path.moveTo(graph_x, graph_y)  # top-left (0 dB)
+
+            for i, gr_val in enumerate(self._history):
+                x = graph_x + i * step_x
+                ratio = gr_val / self._max_gr
+                y = graph_y + ratio * graph_h
+                if i == 0:
+                    path.moveTo(x, graph_y)
+                    path.lineTo(x, y)
+                else:
+                    path.lineTo(x, y)
+
+            # Close path back to top
+            path.lineTo(graph_x + (num_points - 1) * step_x, graph_y)
+            path.closeSubpath()
+
+            # Fill with gradient
+            grad = QLinearGradient(0, graph_y, 0, graph_y + graph_h)
+            grad.setColorAt(0.0, QColor(0, 180, 216, 60))     # Teal transparent
+            grad.setColorAt(0.3, QColor(0, 180, 216, 120))    # More opaque
+            grad.setColorAt(1.0, QColor(0, 119, 182, 180))    # Deep teal
+            p.setBrush(QBrush(grad))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawPath(path)
+
+            # Outline of waveform (teal glow)
+            outline = QPainterPath()
+            for i, gr_val in enumerate(self._history):
+                x = graph_x + i * step_x
+                ratio = gr_val / self._max_gr
+                y = graph_y + ratio * graph_h
+                if i == 0:
+                    outline.moveTo(x, y)
+                else:
+                    outline.lineTo(x, y)
+            p.setPen(QPen(QColor(C_TEAL_GLOW), 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(outline)
+
+        # ── Peak GR line (dashed) ──
+        if self._peak_gr > 0.1:
+            peak_ratio = self._peak_gr / self._max_gr
+            peak_y = graph_y + peak_ratio * graph_h
+            p.setPen(QPen(QColor(C_LED_RED), 1, Qt.PenStyle.DashLine))
+            p.drawLine(graph_x, int(peak_y), graph_x + graph_w, int(peak_y))
+            # Peak label
+            p.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
+            p.setPen(QColor(C_LED_RED))
+            p.drawText(graph_x + graph_w - 40, int(peak_y) - 2,
+                       f"-{self._peak_gr:.1f}")
+
+        # ── Current GR overlay (large text, bottom-right) ──
+        p.setFont(QFont("Menlo", 20, QFont.Weight.Bold))
+        if self._current_gr > 6.0:
+            gr_color = QColor(C_LED_RED)
+        elif self._current_gr > 3.0:
+            gr_color = QColor(C_AMBER_GLOW)
+        elif self._current_gr > 0.1:
+            gr_color = QColor(C_TEAL_GLOW)
+        else:
+            gr_color = QColor(C_CREAM_DIM)
+        gr_text = f"-{self._current_gr:.1f}" if self._current_gr > 0.05 else "0.0"
+        p.setPen(gr_color)
+        p.drawText(graph_x + graph_w - 80, graph_h - 8, f"{gr_text} dB")
+
+        # ── Label ──
+        p.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
+        p.setPen(QColor(C_TEAL))
+        p.drawText(graph_x + 2, graph_y + 10, "GAIN REDUCTION")
+
+        p.end()
+
+
+# ══════════════════════════════════════════════════
 #  Ozone 12 / Logic Pro Level Meter Widget
 # ══════════════════════════════════════════════════
 class OzoneLevelMeter(QWidget):
@@ -2380,41 +2826,14 @@ class MetersPanel(QFrame):
 
         layout.addWidget(self._groove_divider())
 
-        # ── TRUE PEAK (V5.5 — large vintage readout) ──
-        self._add_section_header(layout, "TRUE  PEAK")
-        tp_frame = QFrame()
-        tp_frame.setStyleSheet(f"""
-            QFrame {{
-                background: #0A0A0C;
-                border: 1px solid {C_GROOVE};
-                border-radius: 4px;
-                padding: 4px;
-            }}
-        """)
-        tp_inner = QHBoxLayout(tp_frame)
-        tp_inner.setContentsMargins(8, 2, 8, 2)
-        tp_inner.setSpacing(4)
-        self.live_tp = QLabel("--.- dBTP")
-        self.live_tp.setFont(QFont("Menlo", 22, QFont.Weight.Bold))
-        self.live_tp.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.live_tp.setStyleSheet(f"color: {C_LED_GREEN}; background: transparent;")
-        tp_inner.addWidget(self.live_tp)
-        # Over LED indicator
-        self.live_tp_led = QLabel("●")
-        self.live_tp_led.setFont(QFont("Menlo", 16))
-        self.live_tp_led.setStyleSheet(f"color: {C_GROOVE}; background: transparent;")
-        self.live_tp_led.setFixedWidth(20)
-        tp_inner.addWidget(self.live_tp_led)
-        layout.addWidget(tp_frame)
+        # ── V5.6: WAVES WLM-STYLE LOUDNESS METER ──
+        self.live_wlm_meter = WavesWLMMeter(target_lufs=-14.0)
+        layout.addWidget(self.live_wlm_meter, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        layout.addWidget(self._groove_divider())
-
-        # ── LOUDNESS BARS (V5.5 — SSL/Neve vintage, wider) ──
-        self._add_section_header(layout, "LOUDNESS  (LUFS)")
-        self.live_lufs_bars = LoudnessMeterBars(target_lufs=-14.0)
-        layout.addWidget(self.live_lufs_bars, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Backward-compat: hidden text labels
+        # Backward-compat references
+        self.live_tp = None       # Now inside WLM meter
+        self.live_tp_led = None   # Now inside WLM meter
+        self.live_lufs_bars = None  # Replaced by WLM meter
         self.live_lufs_mom = QLabel("--.-")
         self.live_lufs_mom.setVisible(False)
         self.live_lufs_short = QLabel("--.-")
@@ -2424,31 +2843,13 @@ class MetersPanel(QFrame):
 
         layout.addWidget(self._groove_divider())
 
-        # ── GAIN REDUCTION (V5.5 — wide amber bar + large readout) ──
-        self._add_section_header(layout, "GAIN  REDUCTION")
-        self.live_gr_bar = QProgressBar()
-        self.live_gr_bar.setRange(0, 100)
-        self.live_gr_bar.setValue(0)
-        self.live_gr_bar.setFixedHeight(14)
-        self.live_gr_bar.setTextVisible(False)
-        self.live_gr_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background: #08080A;
-                border: 1px solid {C_GROOVE};
-                border-radius: 3px;
-            }}
-            QProgressBar::chunk {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-                    stop:0 {C_AMBER}, stop:0.7 {C_AMBER_GLOW}, stop:1 {C_LED_RED});
-                border-radius: 2px;
-            }}
-        """)
-        layout.addWidget(self.live_gr_bar)
-        self.live_gr_val = QLabel("0.0 dB")
-        self.live_gr_val.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
-        self.live_gr_val.setStyleSheet(f"color:{C_AMBER_GLOW};")
-        self.live_gr_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.live_gr_val)
+        # ── V5.6: GAIN REDUCTION HISTORY (Ozone 12 style) ──
+        self.live_gr_history = GainReductionHistoryWidget()
+        layout.addWidget(self.live_gr_history, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Backward-compat references
+        self.live_gr_bar = None   # Replaced by history widget
+        self.live_gr_val = None   # Replaced by history widget
 
         # ── STAGE indicator (V5.5 — larger, more prominent) ──
         self.live_stage = QLabel("STAGE: IDLE")
@@ -2564,41 +2965,35 @@ class MetersPanel(QFrame):
 
     def update_live_levels(self, levels: dict):
         """Update live meter from chain meter callback data."""
-        self.live_ozone_meter.set_levels(
-            l_peak=levels.get("left_peak_db", -60.0),
-            r_peak=levels.get("right_peak_db", -60.0),
-            l_rms=levels.get("left_rms_db", -60.0),
-            r_rms=levels.get("right_rms_db", -60.0),
-        )
-        # Update True Peak + over LED
-        tp = max(levels.get("left_peak_db", -60.0), levels.get("right_peak_db", -60.0))
-        self.live_tp.setText(f"{tp:.1f} dBTP")
-        if tp > -1.0:
-            self.live_tp.setStyleSheet(f"color: {C_LED_RED}; background: transparent;")
-            self.live_tp_led.setStyleSheet(f"color: {C_LED_RED}; background: transparent;")
-        elif tp > -3.0:
-            self.live_tp.setStyleSheet(f"color: {C_LED_YELLOW}; background: transparent;")
-            self.live_tp_led.setStyleSheet(f"color: {C_LED_YELLOW}; background: transparent;")
-        else:
-            self.live_tp.setStyleSheet(f"color: {C_LED_GREEN}; background: transparent;")
-            self.live_tp_led.setStyleSheet(f"color: {C_GROOVE}; background: transparent;")
+        l_peak = levels.get("left_peak_db", -60.0)
+        r_peak = levels.get("right_peak_db", -60.0)
+        l_rms = levels.get("left_rms_db", -60.0)
+        r_rms = levels.get("right_rms_db", -60.0)
 
-        # LUFS values — drive LED bars + keep hidden text labels updated
+        # L/R Level Meter (SSL/Neve style)
+        self.live_ozone_meter.set_levels(
+            l_peak=l_peak, r_peak=r_peak, l_rms=l_rms, r_rms=r_rms)
+
+        # V5.6: Waves WLM Meter — full loudness data
         lufs_m = levels.get("lufs_momentary", -70.0)
         lufs_s = levels.get("lufs_short_term", -70.0)
         lufs_i = levels.get("lufs_integrated", -70.0)
         lu_range = levels.get("lu_range", 0.0)
-        self.live_lufs_bars.set_levels(lufs_m, lufs_s, lufs_i)
-        self.live_lufs_bars.set_lu_range(lu_range)
+
+        if hasattr(self, 'live_wlm_meter') and self.live_wlm_meter is not None:
+            self.live_wlm_meter.set_levels(
+                momentary=lufs_m, short_term=lufs_s, integrated=lufs_i,
+                lra=lu_range, tp_left=l_peak, tp_right=r_peak)
+
+        # Backward-compat hidden labels
         self.live_lufs_mom.setText(f"{lufs_m:.1f}")
         self.live_lufs_short.setText(f"{lufs_s:.1f}")
         self.live_lufs_int.setText(f"{lufs_i:.1f}")
 
-        # Gain reduction
-        gr = levels.get("gain_reduction_db", 0.0)
-        self.live_gr_val.setText(f"{gr:.1f} dB")
-        gr_pct = min(100, int(abs(gr) / 12.0 * 100))
-        self.live_gr_bar.setValue(gr_pct)
+        # V5.6: GR History Widget
+        gr = abs(levels.get("gain_reduction_db", 0.0))
+        if hasattr(self, 'live_gr_history') and self.live_gr_history is not None:
+            self.live_gr_history.set_gr(gr)
 
         # Stage
         stage = levels.get("stage", "")
@@ -3136,6 +3531,18 @@ class MasterPanel(QWidget):
                 self.genre_combo.addItem(f"{name}", userData=name)
         layout.addWidget(self.genre_combo)
 
+        # Mastering Preset (one-click: Dynamics + Imager + Maximizer)
+        layout.addWidget(self._panel_label("PRESET"))
+        self.mastering_preset_combo = QComboBox()
+        self.mastering_preset_combo.addItem("— Custom —")
+        for cat, names in MASTERING_PRESET_CATEGORIES.items():
+            for name in names:
+                desc = MASTERING_PRESETS[name]["description"]
+                self.mastering_preset_combo.addItem(f"{name}", userData=name)
+        self.mastering_preset_combo.setToolTip("One-click mastering preset (Dynamics + Imager + Maximizer)")
+        self.mastering_preset_combo.currentIndexChanged.connect(self._on_mastering_preset_changed)
+        layout.addWidget(self.mastering_preset_combo)
+
         # File indicator
         layout.addWidget(self._panel_label("FILE"))
         self.file_label = QLabel("No file loaded")
@@ -3557,23 +3964,30 @@ class MasterPanel(QWidget):
         top_row.addStretch()
 
         # IRC Mode dropdown button — teal, Ozone 12 style
-        self.irc_mode_btn = QPushButton("IRC 4 — Classic  ▾")
-        self.irc_mode_btn.setFixedHeight(30)
-        self.irc_mode_btn.setMinimumWidth(180)
+        self.irc_mode_btn = QPushButton("IRC 3 — Balanced  ▾")
+        self.irc_mode_btn.setFixedHeight(32)
+        self.irc_mode_btn.setMinimumWidth(200)
         self.irc_mode_btn.setStyleSheet(f"""
             QPushButton {{
-                background: #1A1A1E;
-                border: 1px solid #2A2A30;
-                border-radius: 4px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1E1E26, stop:1 #14141A);
+                border: 1px solid {C_TEAL_DIM};
+                border-radius: 5px;
                 color: {C_TEAL_GLOW};
                 font-weight: bold;
                 font-size: 11px;
                 font-family: 'SF Pro Display', 'Menlo', monospace;
-                padding: 4px 12px;
+                padding: 5px 14px;
                 text-align: left;
             }}
             QPushButton:hover {{
                 border-color: {C_TEAL};
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #222230, stop:1 #1A1A24);
+                color: #FFFFFF;
+            }}
+            QPushButton:pressed {{
+                background: {C_TEAL_DIM};
                 color: #FFFFFF;
             }}
         """)
@@ -3582,7 +3996,7 @@ class MasterPanel(QWidget):
         layout.addLayout(top_row)
 
         # IRC description (subtle)
-        self.irc_desc_label = QLabel(IRC_MODES.get("IRC 4 - Classic", {}).get("description", ""))
+        self.irc_desc_label = QLabel(IRC_MODES.get("IRC 3 - Balanced", {}).get("description", ""))
         self.irc_desc_label.setWordWrap(True)
         self.irc_desc_label.setStyleSheet(
             f"color: #6B6B70; font-style: italic; font-size: 8px; padding: 0 0 2px 0;")
@@ -3766,36 +4180,13 @@ class MasterPanel(QWidget):
         main_row.addLayout(meter_col, 2)
         layout.addLayout(main_row)
 
-        # ═══ GAIN REDUCTION bar (horizontal, Ozone teal) ═══
-        gr_row = QHBoxLayout()
-        gr_row.setSpacing(6)
-        gr_lbl = QLabel("GR")
-        gr_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:8px; font-weight:bold; letter-spacing:1px;")
-        gr_row.addWidget(gr_lbl)
+        # ═══ GAIN REDUCTION — Ozone 12 Style History Widget ═══
+        self.max_gr_history = GainReductionHistoryWidget()
+        layout.addWidget(self.max_gr_history)
 
-        self.max_gr_bar = QProgressBar()
-        self.max_gr_bar.setRange(0, 200)
-        self.max_gr_bar.setValue(0)
-        self.max_gr_bar.setFixedHeight(12)
-        self.max_gr_bar.setTextVisible(False)
-        self.max_gr_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background: #141416; border: 1px solid #2A2A30; border-radius: 2px;
-            }}
-            QProgressBar::chunk {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-                    stop:0 {C_TEAL}, stop:1 {C_TEAL_GLOW});
-                border-radius: 2px;
-            }}
-        """)
-        gr_row.addWidget(self.max_gr_bar)
-
-        self.max_gr_label = QLabel("0.0 dB")
-        self.max_gr_label.setFixedWidth(55)
-        self.max_gr_label.setStyleSheet(
-            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-weight:bold; font-size:10px;")
-        gr_row.addWidget(self.max_gr_label)
-        layout.addLayout(gr_row)
+        # Keep legacy references for backward compat with _apply_meter_result
+        self.max_gr_bar = None  # Replaced by history widget
+        self.max_gr_label = None  # Replaced by history widget
 
         # ═══ ADVANCED section (compact grid) ═══
         adv_frame = QFrame()
@@ -4239,6 +4630,121 @@ class MasterPanel(QWidget):
             self.chain.load_audio(self._current_audio_path)
         self._sync_ui_from_chain()
 
+    def _on_mastering_preset_changed(self, index: int):
+        """Apply a one-click mastering preset (Dynamics + Imager + Maximizer)."""
+        if index <= 0:  # "— Custom —" selected
+            return
+        name = self.mastering_preset_combo.itemData(index)
+        if not name or name not in MASTERING_PRESETS:
+            return
+        preset = MASTERING_PRESETS[name]
+        print(f"[PRESET] Applying mastering preset: {name}")
+
+        # --- Apply Dynamics ---
+        dyn = preset["dynamics"]
+        band = self.chain.dynamics.single_band
+        band.threshold = dyn["threshold"]
+        band.ratio = dyn["ratio"]
+        band.attack = dyn["attack"]
+        band.release = dyn["release"]
+        band.makeup = dyn["makeup"]
+        band.knee = dyn.get("knee", 4)
+        self._sync_dynamics_ui()
+
+        # --- Apply Imager ---
+        img = preset["imager"]
+        self.chain.imager.set_width(img["width"])
+        if img.get("mono_bass_freq", 0) > 0:
+            self.chain.imager.mono_bass_freq = img["mono_bass_freq"]
+        self._sync_imager_ui()
+
+        # --- Apply Maximizer ---
+        mx = preset["maximizer"]
+        self.chain.maximizer.set_gain(mx["gain_db"])
+        self.chain.maximizer.set_ceiling(mx["ceiling"])
+        self.chain.maximizer.set_character(mx["character"])
+        self.chain.maximizer.set_irc_mode(mx["irc_mode"], mx.get("irc_sub_mode"))
+        self.chain.maximizer.transient_emphasis_pct = mx.get("transient_emphasis_pct", 0)
+        self.chain.maximizer.upward_compress_db = mx.get("upward_compress_db", 0)
+        self.chain.maximizer.soft_clip_enabled = mx.get("soft_clip_enabled", False)
+        self.chain.maximizer.soft_clip_pct = mx.get("soft_clip_pct", 0)
+        self._sync_maximizer_ui()
+
+        # Schedule auto-measure if audio loaded
+        self._schedule_auto_measure()
+
+    def _sync_dynamics_ui(self):
+        """Sync dynamics UI knobs + curve from chain state."""
+        band = self.chain.dynamics.single_band
+        if hasattr(self, 'dyn_knobs'):
+            knob_vals = {
+                "threshold": band.threshold, "ratio": band.ratio,
+                "attack": band.attack, "release": band.release,
+                "makeup": band.makeup, "knee": band.knee,
+            }
+            for attr, val in knob_vals.items():
+                if attr in self.dyn_knobs:
+                    self.dyn_knobs[attr].setValue(val)
+        # Update curve widget
+        if hasattr(self, 'dyn_curve'):
+            self.dyn_curve.setThreshold(band.threshold)
+            self.dyn_curve.setRatio(band.ratio)
+            self.dyn_curve.setKnee(band.knee)
+            self.dyn_curve.setAttack(band.attack)
+            self.dyn_curve.setRelease(band.release)
+            self.dyn_curve.setMakeup(band.makeup)
+
+    def _sync_imager_ui(self):
+        """Sync imager UI controls from chain state."""
+        img = self.chain.imager
+        if hasattr(self, 'img_width_slider'):
+            self.img_width_slider.blockSignals(True)
+            self.img_width_slider.setValue(img.width)
+            self.img_width_slider.blockSignals(False)
+
+    def _sync_maximizer_ui(self):
+        """Sync maximizer UI controls from chain state."""
+        mx = self.chain.maximizer
+        if hasattr(self, 'max_gain_dial'):
+            self.max_gain_dial.blockSignals(True)
+            self.max_gain_dial.setValue(int(mx.gain_db * 10))
+            self.max_gain_dial.blockSignals(False)
+        if hasattr(self, 'max_gain_display'):
+            self.max_gain_display.setText(f"+{mx.gain_db:.1f}")
+        if hasattr(self, 'max_ceiling'):
+            self.max_ceiling.blockSignals(True)
+            self.max_ceiling.setValue(mx.ceiling)
+            self.max_ceiling.blockSignals(False)
+        if hasattr(self, 'max_character'):
+            self.max_character.blockSignals(True)
+            self.max_character.setValue(int(mx.character * 10))
+            self.max_character.blockSignals(False)
+        if hasattr(self, 'max_char_val'):
+            self.max_char_val.setText(f"{mx.character:.2f}")
+        if hasattr(self, 'irc_mode_btn'):
+            mode = mx.irc_mode
+            sub = mx.irc_sub_mode
+            if sub:
+                self.irc_mode_btn.setText(f"{mode} — {sub}  ▾")
+            else:
+                self.irc_mode_btn.setText(f"{mode}  ▾")
+        if hasattr(self, 'max_transient'):
+            self.max_transient.blockSignals(True)
+            self.max_transient.setValue(mx.transient_emphasis_pct)
+            self.max_transient.blockSignals(False)
+        if hasattr(self, 'max_upward'):
+            self.max_upward.blockSignals(True)
+            self.max_upward.setValue(mx.upward_compress_db)
+            self.max_upward.blockSignals(False)
+        if hasattr(self, 'max_softclip_chk'):
+            self.max_softclip_chk.blockSignals(True)
+            self.max_softclip_chk.setChecked(mx.soft_clip_enabled)
+            self.max_softclip_chk.blockSignals(False)
+        if hasattr(self, 'max_softclip_pct'):
+            self.max_softclip_pct.blockSignals(True)
+            self.max_softclip_pct.setValue(mx.soft_clip_pct)
+            self.max_softclip_pct.blockSignals(False)
+
     def _on_eq_preset_changed(self, preset: str):
         self.chain.equalizer.load_tone_preset(preset)
         for i, band in enumerate(self.chain.equalizer.bands):
@@ -4340,34 +4846,74 @@ class MasterPanel(QWidget):
     # ═══ MAXIMIZER HANDLERS — Ozone 12 Style ═══
 
     def _show_irc_menu(self):
-        """Show IRC mode dropdown menu with sub-menus (Ozone 12 style)."""
+        """Show IRC mode dropdown menu (Ozone 12 style).
+        6 modes: IRC 1-5 + IRC LL
+        Sub-modes only on IRC 3 & IRC 4 (Pumping/Balanced/Crisp)"""
         menu = QMenu(self)
         menu.setStyleSheet(f"""
             QMenu {{
-                background: #1A1A1E; border: 1px solid #2A2A30;
-                color: {C_CREAM}; font-family: 'SF Pro Display', 'Menlo';
-                font-size: 11px; padding: 4px;
+                background: #12121A;
+                border: 1px solid {C_TEAL_DIM};
+                border-radius: 6px;
+                color: {C_CREAM};
+                font-family: 'SF Pro Display', 'Menlo', monospace;
+                font-size: 11px;
+                padding: 6px 2px;
             }}
-            QMenu::item {{ padding: 6px 20px; border-radius: 3px; }}
-            QMenu::item:selected {{ background: {C_TEAL_DIM}; color: #FFFFFF; }}
-            QMenu::separator {{ height: 1px; background: #2A2A30; margin: 4px 8px; }}
+            QMenu::item {{
+                padding: 8px 16px;
+                border-radius: 4px;
+                margin: 1px 4px;
+            }}
+            QMenu::item:selected {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {C_TEAL_DIM}, stop:1 {C_TEAL});
+                color: #FFFFFF;
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 transparent, stop:0.5 {C_TEAL_DIM}, stop:1 transparent);
+                margin: 4px 12px;
+            }}
         """)
+
+        # IRC mode descriptions for menu items
+        mode_icons = {
+            "IRC 1": "◇",   # Transparent
+            "IRC 2": "◈",   # Adaptive
+            "IRC 3": "◆",   # Multi-band (most popular)
+            "IRC 4": "⬥",   # Aggressive
+            "IRC 5": "⬢",   # Maximum Density
+            "IRC LL": "⚡",  # Low Latency
+        }
 
         for mode_key in IRC_TOP_MODES:
             mode_data = IRC_MODES.get(mode_key, {})
             sub_modes = mode_data.get("sub_modes", [])
+            icon = mode_icons.get(mode_key, "●")
+
             if sub_modes:
-                sub_menu = menu.addMenu(mode_data.get("name", mode_key))
+                sub_menu = menu.addMenu(f"{icon}  {mode_data.get('name', mode_key)}")
                 sub_menu.setStyleSheet(menu.styleSheet())
                 for sub in sub_modes:
-                    action = sub_menu.addAction(sub)
+                    sub_key = f"{mode_key} - {sub}"
+                    sub_desc = IRC_MODES.get(sub_key, {}).get("description", "")
+                    # Shorten description for menu
+                    short_desc = sub_desc.split("—")[1].strip() if "—" in sub_desc else sub_desc.split(".")[0]
+                    action = sub_menu.addAction(f"{sub}  ·  {short_desc}")
                     action.triggered.connect(
                         lambda checked, m=mode_key, s=sub: self._select_irc(m, s))
             else:
-                display_name = mode_data.get("name", mode_key)
-                action = menu.addAction(display_name)
+                # No sub-modes
+                short_desc = mode_data.get("description", "").split("—")[1].strip() if "—" in mode_data.get("description", "") else ""
+                action = menu.addAction(f"{icon}  {mode_data.get('name', mode_key)}  ·  {short_desc}")
                 action.triggered.connect(
                     lambda checked, m=mode_key: self._select_irc(m, ""))
+
+            # Add separator after IRC 2 and IRC 5
+            if mode_key in ("IRC 2", "IRC 5"):
+                menu.addSeparator()
 
         menu.exec(self.irc_mode_btn.mapToGlobal(
             self.irc_mode_btn.rect().bottomLeft()))
@@ -4585,12 +5131,8 @@ class MasterPanel(QWidget):
         """Apply measurement results to the Ozone meter + GR display."""
         l_peak = result.get("l_peak", result["peak_db"])
         r_peak = result.get("r_peak", result["peak_db"])
-        l_rms = result.get("l_rms", result["rms_db"])
-        r_rms = result.get("r_rms", result["rms_db"])
         peak = result["peak_db"]
         gr = result["gain_reduction"]
-
-        # V5.5: Removed duplicate ozone_meter — levels shown in MetersPanel only
 
         # Peak dB text with color
         if peak > -1.0:
@@ -4603,10 +5145,9 @@ class MasterPanel(QWidget):
             f"color:{col}; font-family:'Menlo'; font-size:9px; font-weight:bold;")
         self.max_meter_db.setText(f"{peak:.1f} dB")
 
-        # Gain reduction bar
-        gr_display = min(20.0, gr)
-        self.max_gr_bar.setValue(int(gr_display * 10))
-        self.max_gr_label.setText(f"-{gr_display:.1f} dB")
+        # Gain reduction — update history widget
+        if hasattr(self, 'max_gr_history'):
+            self.max_gr_history.set_gr(gr)
 
         print(f"[MAXIMIZER UI] Measured: L={l_peak:.1f} R={r_peak:.1f} peak={peak:.1f}dB GR={gr:.1f}dB")
 
@@ -5458,12 +5999,24 @@ class MasterPanel(QWidget):
         if lufs_int is not None and lufs_int > -70 and hasattr(self, 'max_lufs_label'):
             self.max_lufs_label.setText(f"{lufs_int:.1f} LUFS")
 
-        # Update GR bar from chain meter data
+        # Update GR from chain meter data — feed history widget
         gr_db = abs(latest.get("gain_reduction_db", 0.0))
-        if hasattr(self, 'max_gr_bar') and gr_db > 0:
-            gr_display = min(20.0, gr_db)
-            self.max_gr_bar.setValue(int(gr_display * 10))
-            self.max_gr_label.setText(f"-{gr_display:.1f} dB")
+        if hasattr(self, 'max_gr_history') and self.max_gr_history is not None:
+            self.max_gr_history.set_gr(gr_db)
+
+        # V5.6: Update Waves WLM meter in MetersPanel
+        if hasattr(self, 'meters') and hasattr(self.meters, 'live_wlm_meter'):
+            l_peak = latest.get("left_peak_db", -70.0)
+            r_peak = latest.get("right_peak_db", -70.0)
+            lufs_mom = latest.get("lufs_momentary", -70.0)
+            lufs_short = latest.get("lufs_short_term", -70.0)
+            lufs_int = latest.get("lufs_integrated", -70.0)
+            lra = latest.get("lu_range", 0.0)
+            self.meters.live_wlm_meter.set_levels(
+                momentary=lufs_mom, short_term=lufs_short,
+                integrated=lufs_int, lra=lra,
+                tp_left=l_peak, tp_right=r_peak,
+            )
 
         # True Peak indicator color
         if hasattr(self, 'max_meter_db'):
