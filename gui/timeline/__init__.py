@@ -5,6 +5,12 @@ from gui.timeline.track_list import TrackListItem, DraggableTrackListWidget
 from gui.timeline.multi_track_timeline import (
     MultiTrackTimeline, ClipItem, PlayheadItem, TrackHeaderPanel,
 )
+# Story 3.1 — Keyframe editor
+from gui.timeline.keyframe_editor import KeyframeEditor, KeyframeCurveScene, KeyframeDiamond
+# Story 3.2 — Text layer
+from gui.timeline.text_layer import TextClip, TextClipItem, TextPropertiesPanel, TextAnimation
+# Story 3.5 — Speed ramp
+from gui.timeline.speed_ramp import SpeedRamp, SpeedPreset, SpeedCurveEditor
 
 __all__ = [
     "TimelineCanvas",
@@ -17,4 +23,17 @@ __all__ = [
     "ClipItem",
     "PlayheadItem",
     "TrackHeaderPanel",
+    # Story 3.1
+    "KeyframeEditor",
+    "KeyframeCurveScene",
+    "KeyframeDiamond",
+    # Story 3.2
+    "TextClip",
+    "TextClipItem",
+    "TextPropertiesPanel",
+    "TextAnimation",
+    # Story 3.5
+    "SpeedRamp",
+    "SpeedPreset",
+    "SpeedCurveEditor",
 ]

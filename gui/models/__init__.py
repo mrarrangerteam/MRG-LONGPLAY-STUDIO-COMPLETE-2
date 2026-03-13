@@ -6,6 +6,18 @@ from gui.models.commands import (
     AddClipCommand, DeleteClipCommand,
     AddTrackCommand, DeleteTrackCommand,
 )
+from gui.models.keyframes import (
+    KeyframeType, Keyframe, KeyframeTrack,
+)
+from gui.models.transitions import (
+    TransitionType, EasingType, Transition,
+)
+from gui.models.effects import (
+    EffectType, Effect,
+)
+from gui.models.export_presets import (
+    ExportPreset, BUILTIN_PRESETS,
+)
 
 __all__ = [
     "TrackType",
@@ -21,4 +33,18 @@ __all__ = [
     "DeleteClipCommand",
     "AddTrackCommand",
     "DeleteTrackCommand",
+    # Story 3.1 — Keyframes
+    "KeyframeType",
+    "Keyframe",
+    "KeyframeTrack",
+    # Story 3.3 — Transitions
+    "TransitionType",
+    "EasingType",
+    "Transition",
+    # Story 3.4 — Effects
+    "EffectType",
+    "Effect",
+    # Story 3.6 — Export presets
+    "ExportPreset",
+    "BUILTIN_PRESETS",
 ]
