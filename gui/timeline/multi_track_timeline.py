@@ -27,6 +27,9 @@ from gui.utils.compat import (
 from gui.styles import Colors
 from gui.models.track import TrackType, Clip, Track, Project
 
+# Forward-declare DragState type for type hints
+_DragStateType = object  # resolved at runtime via clip_drag module
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -281,6 +284,9 @@ class MultiTrackTimeline(QWidget):
         # State for playhead drag
         self._dragging_playhead = False
 
+        # State for clip drag (Story 2.3)
+        self._drag_state: Optional["_DragStateType"] = None
+
     # -- public API --------------------------------------------------------
     def set_project(self, project: Project) -> None:
         self._project = project
@@ -433,6 +439,8 @@ class MultiTrackTimeline(QWidget):
 
     # -- mouse handlers on the scene ---------------------------------------
     def _scene_mouse_press(self, event: object) -> None:
+        from gui.timeline.clip_drag import begin_drag
+
         pos = event.scenePos()  # type: ignore[union-attr]
         # Click in ruler area -> move playhead
         if pos.y() < RULER_HEIGHT:
@@ -450,22 +458,46 @@ class MultiTrackTimeline(QWidget):
                 self.clip_split.emit(item.clip_id, t)
             return
 
+        # Check if clicking on a clip — start drag
+        item = self._scene.itemAt(pos, self._view.transform())
+        if isinstance(item, ClipItem):
+            self._drag_state = begin_drag(self, item, pos)
+            self.clip_selected.emit(item.clip_id)
+            return
+
         # Otherwise default — let scene handle selection
         QGraphicsScene.mousePressEvent(self._scene, event)  # type: ignore[arg-type]
 
     def _scene_mouse_move(self, event: object) -> None:
+        from gui.timeline.clip_drag import update_drag
+
+        pos = event.scenePos()  # type: ignore[union-attr]
+
         if self._dragging_playhead:
-            pos = event.scenePos()  # type: ignore[union-attr]
             t = max(0.0, pos.x() / self._pps)
             self.set_playhead(self.snap_time(t))
             self.playhead_moved.emit(self._playhead_time)
             return
+
+        if self._drag_state is not None:
+            update_drag(self, self._drag_state, pos)
+            return
+
         QGraphicsScene.mouseMoveEvent(self._scene, event)  # type: ignore[arg-type]
 
     def _scene_mouse_release(self, event: object) -> None:
+        from gui.timeline.clip_drag import end_drag
+
         if self._dragging_playhead:
             self._dragging_playhead = False
             return
+
+        if self._drag_state is not None:
+            pos = event.scenePos()  # type: ignore[union-attr]
+            end_drag(self, self._drag_state, pos)
+            self._drag_state = None
+            return
+
         QGraphicsScene.mouseReleaseEvent(self._scene, event)  # type: ignore[arg-type]
 
     # -- wheel zoom (Ctrl + scroll) ----------------------------------------
