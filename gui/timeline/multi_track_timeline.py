@@ -208,6 +208,7 @@ class MultiTrackTimeline(QWidget):
     clip_moved = pyqtSignal(str, str, float)  # clip_id, new_track_id, new_start
     clip_trimmed = pyqtSignal(str, float, float)  # clip_id, new_in, new_out
     clip_split = pyqtSignal(str, float)       # clip_id, split_time
+    export_requested = pyqtSignal()            # user clicked Export
 
     def __init__(self, project: Optional[Project] = None, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -271,6 +272,22 @@ class MultiTrackTimeline(QWidget):
         self._zoom_slider.setFixedHeight(16)
         self._zoom_slider.valueChanged.connect(self._on_zoom_slider)
         zoom_bar.addWidget(self._zoom_slider, 1)
+
+        # Export button
+        self._export_btn = QPushButton("Export")
+        self._export_btn.setFixedSize(60, 22)
+        self._export_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {Colors.ACCENT};
+                color: #000;
+                border-radius: 4px;
+                font: bold 11px;
+            }}
+            QPushButton:hover {{ background: {Colors.ACCENT_BRIGHT}; }}
+        """)
+        self._export_btn.clicked.connect(self._on_export_clicked)
+        zoom_bar.addWidget(self._export_btn)
+
         right.addLayout(zoom_bar)
 
         main.addLayout(right, 1)
@@ -568,3 +585,8 @@ class MultiTrackTimeline(QWidget):
                         self.zoom_out()
                     return True
         return False
+
+    # -- export button handler ---------------------------------------------
+    def _on_export_clicked(self) -> None:
+        """Handle export button click — emit signal for parent to handle."""
+        self.export_requested.emit()
