@@ -1137,7 +1137,7 @@ class MasterChain:
                                 lufs_int = -70.0
                             levels["lufs_integrated"] = lufs_int
                             levels["lufs"] = lufs_int  # backward compat
-                    except:
+                    except Exception:
                         levels["lufs_momentary"] = -70.0
                         levels["lufs_short_term"] = -70.0
                         levels["lufs_integrated"] = -70.0
@@ -1416,7 +1416,7 @@ class MasterChain:
             if os.path.exists(temp_file):
                 try:
                     os.remove(temp_file)
-                except:
+                except OSError:
                     pass
 
     # ─── A/B Comparison ───

@@ -25,19 +25,35 @@ import sys
 import threading
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
-    QPushButton, QComboBox, QSlider, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QTabWidget, QProgressBar, QFrame, QGridLayout,
-    QFileDialog, QMessageBox, QSizePolicy, QScrollArea,
-    QStackedWidget, QSpacerItem, QMenu, QDial,
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QUrl
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PyQt6.QtGui import (
-    QFont, QColor, QPalette, QIcon, QPainter, QPen, QBrush,
-    QLinearGradient, QRadialGradient, QPainterPath, QConicalGradient,
-)
+# V5.5 FIX: PyQt6/PySide6 fallback (matching gui.py pattern)
+try:
+    from PyQt6.QtWidgets import (
+        QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+        QPushButton, QComboBox, QSlider, QSpinBox, QDoubleSpinBox,
+        QCheckBox, QTabWidget, QProgressBar, QFrame, QGridLayout,
+        QFileDialog, QMessageBox, QSizePolicy, QScrollArea,
+        QStackedWidget, QSpacerItem, QMenu, QDial,
+    )
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QUrl
+    from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PyQt6.QtGui import (
+        QFont, QColor, QPalette, QIcon, QPainter, QPen, QBrush,
+        QLinearGradient, QRadialGradient, QPainterPath, QConicalGradient,
+    )
+except ImportError:
+    from PySide6.QtWidgets import (
+        QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+        QPushButton, QComboBox, QSlider, QSpinBox, QDoubleSpinBox,
+        QCheckBox, QTabWidget, QProgressBar, QFrame, QGridLayout,
+        QFileDialog, QMessageBox, QSizePolicy, QScrollArea,
+        QStackedWidget, QSpacerItem, QMenu, QDial,
+    )
+    from PySide6.QtCore import Qt, QThread, Signal as pyqtSignal, QTimer, QSize, QUrl
+    from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PySide6.QtGui import (
+        QFont, QColor, QPalette, QIcon, QPainter, QPen, QBrush,
+        QLinearGradient, QRadialGradient, QPainterPath, QConicalGradient,
+    )
 import math
 
 # Import master modules

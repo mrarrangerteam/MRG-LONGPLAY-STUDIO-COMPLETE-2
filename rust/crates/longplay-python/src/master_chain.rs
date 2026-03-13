@@ -81,8 +81,14 @@ impl PyMasterChain {
     }
 
     /// Apply a recommendation object
+    /// V5.5 FIX: Build internal rec from PyMasterRecommendation fields
+    /// instead of re-running ai_recommend (which wastes computation and may differ)
     fn apply_recommendation(&mut self, rec: &PyMasterRecommendation) -> PyResult<()> {
-        // Re-run ai_recommend with the same parameters to get the internal rec
+        // Set parameters directly from the recommendation
+        self.inner.set_intensity(rec.intensity)
+            .map_err(|e| PyRuntimeError::new_err(e))?;
+        let _ = self.inner.set_platform(&rec.platform);
+        // Re-run only if we need full module settings (current limitation)
         let inner_rec = self.inner.ai_recommend(&rec.genre, &rec.platform, rec.intensity)
             .map_err(|e| PyRuntimeError::new_err(e))?;
         self.inner.apply_recommendation(&inner_rec);
@@ -93,6 +99,17 @@ impl PyMasterChain {
     #[pyo3(signature = (start_sec, duration_sec, callback=None))]
     fn preview(&mut self, start_sec: f32, duration_sec: f32, callback: Option<Py<PyAny>>) -> Option<String> {
         let _ = callback; // TODO: wire up progress callback
+
+        // V5.5 FIX: Read sample rate from input file instead of hardcoding 44100
+        let sample_rate = if !self.inner.get_input_path().is_empty() {
+            match longplay_io::read_audio(self.inner.get_input_path()) {
+                Ok((_, info)) => info.sample_rate as u32,
+                Err(_) => 44100,
+            }
+        } else {
+            44100
+        };
+
         let buffer = self.inner.preview(start_sec, duration_sec);
         if buffer.is_empty() || buffer[0].is_empty() {
             return None;
@@ -102,7 +119,7 @@ impl PyMasterChain {
         let temp_path = std::env::temp_dir().join("longplay_preview.wav");
         let temp_str = temp_path.to_str().unwrap_or("/tmp/longplay_preview.wav");
 
-        match longplay_io::write_audio(temp_str, &buffer, 44100, 24) {
+        match longplay_io::write_audio(temp_str, &buffer, sample_rate as i32, 24) {
             Ok(_) => Some(temp_str.to_string()),
             Err(e) => {
                 eprintln!("Preview write error: {}", e);

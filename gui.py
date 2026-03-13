@@ -161,10 +161,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Enable faulthandler to dump traceback on SEGFAULT (macOS "Python quit unexpectedly")
 # Crash log will be saved to ~/Desktop/longplay_crash.log
 _crash_log_path = os.path.expanduser("~/Desktop/longplay_crash.log")
+_crash_log_file = None
 try:
     _crash_log_file = open(_crash_log_path, "w")
     faulthandler.enable(file=_crash_log_file, all_threads=True)
     print(f"[CRASH LOG] Enabled → {_crash_log_path}")
+    # V5.5 FIX: Register cleanup to close file on exit
+    import atexit
+    atexit.register(lambda: _crash_log_file.close() if _crash_log_file and not _crash_log_file.closed else None)
 except Exception:
     faulthandler.enable()  # Fallback to stderr
 
