@@ -1,0 +1,5697 @@
+"""
+LongPlay Studio V5.0 — Master Chain UI Panel (Waves-Inspired Pro Audio Plugin)
+PyQt6 integrated panel for AI Mastering.
+
+Design: Inspired by Neve 1073, SSL 4000, analog console hardware.
+Aesthetic: Gunmetal chassis, warm amber VU glow, brushed steel knobs,
+          channel-strip layout, backlit panel labels, 3D beveled controls.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  TOP BAR: Platform / Genre / File / Intensity / Reset               │
+├──────────────────────────────────────────────────────────────────────┤
+│  MODULE CHAIN:  [EQ] → [DYN] → [IMG] → [MAX] → [AI]               │
+├──────────────────────────────────────────────────┬───────────────────┤
+│  ACTIVE MODULE DETAIL                            │  METERS PANEL     │
+│  (Content changes based on selected module)      │  IN/OUT LUFS      │
+│                                                  │  True Peak        │
+│                                                  │  LRA / Target     │
+├──────────────────────────────────────────────────┴───────────────────┤
+│  ACTION BAR: [Analyze] [Preview] [AB Compare] [Render]  ▓▓▓░ 55%   │
+└──────────────────────────────────────────────────────────────────────┘
+"""
+
+import os
+import sys
+import threading
+from typing import Optional
+
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+    QPushButton, QComboBox, QSlider, QSpinBox, QDoubleSpinBox,
+    QCheckBox, QTabWidget, QProgressBar, QFrame, QGridLayout,
+    QFileDialog, QMessageBox, QSizePolicy, QScrollArea,
+    QStackedWidget, QSpacerItem, QMenu, QDial,
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QUrl
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtGui import (
+    QFont, QColor, QPalette, QIcon, QPainter, QPen, QBrush,
+    QLinearGradient, QRadialGradient, QPainterPath, QConicalGradient,
+)
+import math
+
+# Import master modules
+from .chain import MasterChain
+# V5.5 REMOVED: realtime_engine.py deleted (root cause of audio artifacts)
+# All playback now uses offline rendering + QMediaPlayer (Export-Parity architecture)
+from .genre_profiles import (
+    GENRE_PROFILES, PLATFORM_TARGETS, IRC_MODES, IRC_TOP_MODES, TONE_PRESETS,
+    get_genre_list, get_irc_sub_modes,
+)
+from .equalizer import EQ_TONE_PRESETS
+from .dynamics import DYNAMICS_PRESETS
+from .imager import IMAGER_PRESETS
+
+
+# ══════════════════════════════════════════════════
+#  WAVES-INSPIRED PRO AUDIO PLUGIN DESIGN SYSTEM
+# ══════════════════════════════════════════════════
+#
+#  Inspired by:
+#    Waves SSL E-Channel — deep black, amber VU, clean layout
+#    Waves Abbey Road — warm golden tones on dark metal
+#    Waves CLA MixHub — console channel strip aesthetic
+#    Waves Renaissance — clean dark UI with subtle glow
+#    iZotope Ozone — modern dark with teal accents
+#
+
+# --- Chassis & Surface (deeper blacks like Waves) ---
+C_CHASSIS      = "#111113"       # Deep black chassis (Waves-dark)
+C_PANEL        = "#1E1E22"       # Dark metal panel surface
+C_PANEL_LIGHT  = "#2A2A30"       # Lighter panel (raised sections)
+C_PANEL_INSET  = "#0E0E10"       # Inset/recessed (deeper black)
+C_FACEPLATE    = "#282830"       # Module faceplate
+
+# --- Warm Amber / Gold (VU meters, active values) ---
+C_AMBER        = "#E8A832"       # Primary warm amber (VU needle, active)
+C_AMBER_GLOW   = "#F5C04A"       # Bright amber glow
+C_AMBER_DIM    = "#8B6914"       # Dimmed amber
+C_GOLD         = "#C89B3C"       # Muted gold for labels
+
+# --- Teal / Cyan Accent (Waves brand feel) ---
+C_TEAL         = "#00B4D8"       # Primary teal accent
+C_TEAL_DIM     = "#0077B6"       # Dimmed teal
+C_TEAL_GLOW    = "#48CAE4"       # Bright teal glow
+
+# --- Text Colors ---
+C_CREAM        = "#E8E4DC"       # Primary text (warm white)
+C_CREAM_DIM    = "#8E8A82"       # Secondary text
+C_CREAM_DARK   = "#4A4844"       # Disabled/subtle text
+
+# --- LED / Status Colors ---
+C_LED_RED      = "#E53935"       # Red LED (clip/danger)
+C_LED_GREEN    = "#43A047"       # Green LED (good/active)
+C_LED_YELLOW   = "#FDD835"       # Yellow LED (caution)
+C_LED_BLUE     = "#42A5F5"       # Blue LED (info/selected)
+
+# --- Grooves & Borders ---
+C_GROOVE       = "#0A0A0C"       # Deep groove/shadow (near-black)
+C_RIDGE        = "#3E3E46"       # Ridge highlight
+C_SCREW        = "#505058"       # Screw/rivet accent
+C_BORDER       = "#2C2C34"       # Panel border
+
+# --- Module Identity Colors (Waves-style per-module accents) ---
+C_MOD_EQ       = "#4FC3F7"       # Light blue for EQ (SSL-style)
+C_MOD_DYN      = "#FF8A65"       # Warm orange for Dynamics (CLA-style)
+C_MOD_IMG      = "#CE93D8"       # Purple for Imager (Abbey Road-style)
+C_MOD_MAX      = "#FFD54F"       # Amber/gold for Maximizer (L2-style)
+C_MOD_AI       = "#00B4D8"       # Teal for AI (iZotope-style)
+
+# ── Stylesheet Fragments ──
+
+GLOBAL_STYLE = f"""
+QWidget {{
+    background-color: {C_CHASSIS};
+    color: {C_CREAM};
+    font-family: 'Menlo', 'Courier New', monospace;
+    font-size: 12px;
+}}
+QLabel {{
+    background: transparent;
+}}
+QGroupBox {{
+    background: {C_PANEL};
+    border: 1px solid {C_GROOVE};
+    border-top: 1px solid {C_RIDGE};
+    border-radius: 4px;
+    padding: 18px 10px 10px 10px;
+    margin-top: 12px;
+    font-weight: bold;
+    color: {C_GOLD};
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 6px;
+    color: {C_GOLD};
+}}
+QComboBox {{
+    background: {C_PANEL_INSET};
+    border: 1px solid {C_GROOVE};
+    border-top: 1px solid {C_RIDGE};
+    border-radius: 3px;
+    padding: 5px 8px;
+    color: {C_AMBER_GLOW};
+    min-width: 100px;
+    font-family: 'Menlo', monospace;
+    font-weight: bold;
+}}
+QComboBox:focus {{
+    border-color: {C_TEAL};
+}}
+QComboBox::drop-down {{
+    border: none;
+    width: 20px;
+}}
+QComboBox QAbstractItemView {{
+    background: {C_PANEL};
+    color: {C_CREAM};
+    selection-background-color: {C_AMBER_DIM};
+    selection-color: white;
+    border: 1px solid {C_GROOVE};
+}}
+QSlider::groove:horizontal {{
+    height: 6px;
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {C_GROOVE}, stop:0.5 {C_PANEL_INSET}, stop:1 {C_RIDGE});
+    border-radius: 3px;
+    border: 1px solid {C_GROOVE};
+}}
+QSlider::handle:horizontal {{
+    width: 18px; height: 18px;
+    margin: -7px 0;
+    border-radius: 9px;
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #6E6E74, stop:0.3 #55555B, stop:0.7 #45454B, stop:1 #3A3A40);
+    border: 1px solid {C_GROOVE};
+    border-top: 1px solid {C_RIDGE};
+}}
+QSlider::sub-page:horizontal {{
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 {C_TEAL_DIM}, stop:1 {C_TEAL});
+    border-radius: 3px;
+}}
+QSlider::groove:vertical {{
+    width: 6px;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 {C_GROOVE}, stop:0.5 {C_PANEL_INSET}, stop:1 {C_RIDGE});
+    border-radius: 3px;
+    border: 1px solid {C_GROOVE};
+}}
+QSlider::handle:vertical {{
+    width: 22px; height: 10px;
+    margin: 0 -8px;
+    border-radius: 3px;
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #6E6E74, stop:0.3 #55555B, stop:0.7 #45454B, stop:1 #3A3A40);
+    border: 1px solid {C_GROOVE};
+    border-top: 1px solid {C_RIDGE};
+}}
+QDoubleSpinBox, QSpinBox {{
+    background: {C_PANEL_INSET};
+    border: 1px solid {C_GROOVE};
+    border-top: 1px solid {C_RIDGE};
+    border-radius: 3px;
+    padding: 4px 8px;
+    color: {C_AMBER_GLOW};
+    font-family: 'Menlo', monospace;
+    font-weight: bold;
+}}
+QDoubleSpinBox:focus, QSpinBox:focus {{
+    border-color: {C_TEAL};
+}}
+QCheckBox {{
+    spacing: 8px;
+    color: {C_CREAM};
+    font-size: 11px;
+}}
+QCheckBox::indicator {{
+    width: 16px; height: 16px;
+    border-radius: 3px;
+    border: 1px solid {C_GROOVE};
+    border-top: 1px solid {C_RIDGE};
+    background: {C_PANEL_INSET};
+}}
+QCheckBox::indicator:checked {{
+    background: {C_LED_GREEN};
+    border-color: #1E7A33;
+}}
+QProgressBar {{
+    background: {C_PANEL_INSET};
+    border: 1px solid {C_GROOVE};
+    border-radius: 2px;
+    height: 8px;
+    text-align: center;
+}}
+QProgressBar::chunk {{
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 {C_TEAL_DIM}, stop:0.5 {C_TEAL}, stop:1 {C_TEAL_GLOW});
+    border-radius: 2px;
+}}
+QScrollArea {{
+    border: none;
+    background: transparent;
+}}
+"""
+
+# ── Button Styles ──
+
+BTN_PRIMARY_STYLE = f"""
+QPushButton {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #C8863C, stop:0.1 {C_AMBER}, stop:0.9 {C_AMBER_DIM}, stop:1 #6E5010);
+    color: #1A1A1E;
+    border: 1px solid {C_AMBER_DIM};
+    border-top: 1px solid {C_AMBER_GLOW};
+    border-radius: 4px;
+    padding: 10px 22px;
+    font-weight: bold;
+    font-size: 12px;
+    font-family: 'Menlo', monospace;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}}
+QPushButton:hover {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {C_AMBER_GLOW}, stop:0.1 #F0B840, stop:0.9 {C_AMBER}, stop:1 #8B6E18);
+}}
+QPushButton:pressed {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #6E5010, stop:0.1 {C_AMBER_DIM}, stop:0.9 {C_AMBER}, stop:1 {C_AMBER_GLOW});
+    border-top: 1px solid {C_GROOVE};
+    border-bottom: 1px solid {C_AMBER_GLOW};
+}}
+QPushButton:disabled {{
+    background: {C_PANEL};
+    color: {C_CREAM_DARK};
+    border-color: {C_GROOVE};
+}}
+"""
+
+BTN_SECONDARY_STYLE = f"""
+QPushButton {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {C_FACEPLATE}, stop:0.1 {C_PANEL_LIGHT}, stop:0.9 {C_PANEL}, stop:1 {C_GROOVE});
+    color: {C_CREAM};
+    border: 1px solid {C_GROOVE};
+    border-top: 1px solid {C_RIDGE};
+    border-radius: 4px;
+    padding: 9px 16px;
+    font-size: 11px;
+    font-family: 'Menlo', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}}
+QPushButton:hover {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {C_RIDGE}, stop:0.1 {C_FACEPLATE}, stop:0.9 {C_PANEL_LIGHT}, stop:1 {C_PANEL});
+    color: {C_AMBER_GLOW};
+    border-color: {C_AMBER_DIM};
+}}
+QPushButton:pressed {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {C_GROOVE}, stop:0.1 {C_PANEL}, stop:0.9 {C_PANEL_LIGHT}, stop:1 {C_FACEPLATE});
+    border-top: 1px solid {C_GROOVE};
+    border-bottom: 1px solid {C_RIDGE};
+}}
+QPushButton:disabled {{
+    color: {C_CREAM_DARK};
+    border-color: {C_GROOVE};
+}}
+"""
+
+BTN_GHOST_STYLE = f"""
+QPushButton {{
+    background: transparent;
+    color: {C_CREAM_DIM};
+    border: none;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-family: 'Menlo', monospace;
+}}
+QPushButton:hover {{
+    color: {C_AMBER};
+    background: rgba(232,168,50,0.06);
+    border-radius: 3px;
+}}
+"""
+
+BTN_TEAL_STYLE = f"""
+QPushButton {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {C_TEAL_GLOW}, stop:0.1 {C_TEAL}, stop:0.9 {C_TEAL_DIM}, stop:1 #004466);
+    color: #FFFFFF;
+    border: 1px solid {C_TEAL_DIM};
+    border-top: 1px solid {C_TEAL_GLOW};
+    border-radius: 4px;
+    padding: 10px 22px;
+    font-weight: bold;
+    font-size: 13px;
+    font-family: 'Menlo', monospace;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}}
+QPushButton:hover {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #5AD8F0, stop:0.1 {C_TEAL_GLOW}, stop:0.9 {C_TEAL}, stop:1 {C_TEAL_DIM});
+}}
+QPushButton:pressed {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #004466, stop:0.1 {C_TEAL_DIM}, stop:0.9 {C_TEAL}, stop:1 {C_TEAL_GLOW});
+    border-top: 1px solid {C_GROOVE};
+    border-bottom: 1px solid {C_TEAL_GLOW};
+}}
+QPushButton:disabled {{
+    background: {C_PANEL};
+    color: {C_CREAM_DARK};
+    border-color: {C_GROOVE};
+}}
+"""
+
+
+# ══════════════════════════════════════════════════
+#  Module Chain Button (Hardware-Style Selector)
+# ══════════════════════════════════════════════════
+class ModuleChainNode(QPushButton):
+    """A clickable module node styled as a hardware channel selector."""
+
+    def __init__(self, icon_text: str, name: str, module_id: str, color: str = None, parent=None):
+        super().__init__(parent)
+        self.module_id = module_id
+        self._active = False
+        self._enabled_module = True
+        self._accent_color = color or C_TEAL
+        self.setFixedSize(96, 56)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setText(f"{icon_text}\n{name}")
+        self._update_style()
+
+    def set_active(self, active: bool):
+        self._active = active
+        self._update_style()
+
+    def set_module_enabled(self, enabled: bool):
+        self._enabled_module = enabled
+        self._update_style()
+
+    def _update_style(self):
+        ac = self._accent_color
+        if self._active:
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                        stop:0 {C_FACEPLATE}, stop:0.05 {C_PANEL_LIGHT},
+                        stop:0.95 {C_PANEL}, stop:1 {C_GROOVE});
+                    border: 1px solid {ac};
+                    border-bottom: 2px solid {ac};
+                    border-radius: 4px;
+                    color: {ac};
+                    font-size: 10px;
+                    font-weight: bold;
+                    font-family: 'Menlo', monospace;
+                    text-transform: uppercase;
+                    letter-spacing: 1px;
+                }}
+            """)
+        else:
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                        stop:0 {C_PANEL_LIGHT}, stop:0.05 {C_PANEL},
+                        stop:0.95 {C_PANEL_INSET}, stop:1 {C_GROOVE});
+                    border: 1px solid {C_GROOVE};
+                    border-top: 1px solid {C_RIDGE};
+                    border-radius: 4px;
+                    color: {C_CREAM_DIM};
+                    font-size: 10px;
+                    font-family: 'Menlo', monospace;
+                    text-transform: uppercase;
+                    letter-spacing: 1px;
+                }}
+                QPushButton:hover {{
+                    color: {C_CREAM};
+                    border-color: {C_RIDGE};
+                }}
+            """)
+
+
+# ══════════════════════════════════════════════════
+#  EQ Curve Widget - iZotope Ozone Style
+#  (Visual parametric EQ display with frequency response)
+# ══════════════════════════════════════════════════
+
+class EQCurveWidget(QWidget):
+    """iZotope Ozone-style parametric EQ frequency response display.
+
+    Shows a dark grid with frequency/dB axes, a glowing EQ curve,
+    colored gradient fill under the curve, and draggable band nodes.
+    """
+
+    bandChanged = pyqtSignal(int, float)  # band_index, gain_db
+
+    FREQ_LABELS = ["20", "50", "100", "200", "500", "1K", "2K", "5K", "10K", "20K"]
+    FREQ_VALUES = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+    BAND_FREQS = [32, 64, 125, 250, 1000, 4000, 8000, 16000]  # 8 bands
+    # Colors for gradient fill - teal on left (low freq), magenta on right (high freq)
+    BAND_COLORS = [
+        "#00B4D8", "#00B4D8", "#4FC3F7", "#4FC3F7",
+        "#CE93D8", "#FF8A65", "#E53935", "#E53935"
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(200)
+        self.setMinimumWidth(400)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.gains = [0.0] * 8  # dB gain for each band (-12 to +12)
+        self._dragging_band = -1
+        self.setMouseTracking(True)
+        self._hover_band = -1
+
+    def setGain(self, band: int, gain_db: float):
+        """Set gain for a specific band"""
+        if 0 <= band < 8:
+            self.gains[band] = max(-12.0, min(12.0, gain_db))
+            self.update()
+
+    def _freq_to_x(self, freq: float, left: float, width: float) -> float:
+        """Convert frequency to X position (logarithmic scale)"""
+        if freq <= 0:
+            return left
+        log_min = math.log10(20)
+        log_max = math.log10(20000)
+        log_freq = math.log10(max(20, min(20000, freq)))
+        return left + (log_freq - log_min) / (log_max - log_min) * width
+
+    def _db_to_y(self, db: float, top: float, height: float) -> float:
+        """Convert dB value to Y position"""
+        # -12 dB at bottom, +12 dB at top, 0 at center
+        normalized = (db + 12.0) / 24.0  # 0..1
+        return top + height - normalized * height
+
+    def _y_to_db(self, y: float, top: float, height: float) -> float:
+        """Convert Y position to dB value"""
+        normalized = (top + height - y) / height
+        return normalized * 24.0 - 12.0
+
+    def _get_band_pos(self, band: int, left: float, top: float, width: float, height: float):
+        """Get screen position for a band node"""
+        x = self._freq_to_x(self.BAND_FREQS[band], left, width)
+        y = self._db_to_y(self.gains[band], top, height)
+        return x, y
+
+    def _interpolate_curve(self, x: float, left: float, width: float) -> float:
+        """Interpolate the EQ curve at a given x position using smooth spline-like interpolation"""
+        # Convert x to frequency
+        log_min = math.log10(20)
+        log_max = math.log10(20000)
+        if width <= 0:
+            return 0.0
+        ratio = (x - left) / width
+        log_freq = log_min + ratio * (log_max - log_min)
+        freq = 10 ** log_freq
+
+        # Sum contributions from all bands (bell filter response approximation)
+        total_db = 0.0
+        for i, (bf, gain) in enumerate(zip(self.BAND_FREQS, self.gains)):
+            if abs(gain) < 0.01:
+                continue
+            # Approximate a bell curve response
+            q = 1.5  # Quality factor
+            log_ratio = math.log2(freq / bf) if bf > 0 and freq > 0 else 0
+            response = gain * math.exp(-0.5 * (log_ratio * q) ** 2)
+            total_db += response
+
+        return max(-12.0, min(12.0, total_db))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            margin = 50
+            left = margin
+            top = 30
+            width = self.width() - margin - 20
+            height = self.height() - top - 30
+
+            mx, my = event.position().x(), event.position().y()
+            # Find closest band node
+            closest = -1
+            closest_dist = 20  # Max grab distance
+            for i in range(8):
+                bx, by = self._get_band_pos(i, left, top, width, height)
+                dist = ((mx - bx)**2 + (my - by)**2) ** 0.5
+                if dist < closest_dist:
+                    closest_dist = dist
+                    closest = i
+
+            if closest >= 0:
+                self._dragging_band = closest
+
+    def mouseMoveEvent(self, event):
+        margin = 50
+        left = margin
+        top = 30
+        width = self.width() - margin - 20
+        height = self.height() - top - 30
+        mx, my = event.position().x(), event.position().y()
+
+        if self._dragging_band >= 0:
+            new_db = self._y_to_db(my, top, height)
+            new_db = max(-12.0, min(12.0, new_db))
+            self.gains[self._dragging_band] = new_db
+            self.bandChanged.emit(self._dragging_band, new_db)
+            self.update()
+        else:
+            # Hover detection
+            old_hover = self._hover_band
+            self._hover_band = -1
+            for i in range(8):
+                bx, by = self._get_band_pos(i, left, top, width, height)
+                dist = ((mx - bx)**2 + (my - by)**2) ** 0.5
+                if dist < 15:
+                    self._hover_band = i
+                    break
+            if old_hover != self._hover_band:
+                self.update()
+
+    def mouseReleaseEvent(self, event):
+        self._dragging_band = -1
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+
+        # Layout constants
+        margin_left = 50
+        margin_right = 20
+        margin_top = 30
+        margin_bottom = 30
+
+        graph_left = margin_left
+        graph_top = margin_top
+        graph_width = w - margin_left - margin_right
+        graph_height = h - margin_top - margin_bottom
+
+        # ── Background: deep black recessed panel ──
+        bg_grad = QLinearGradient(0, 0, 0, h)
+        bg_grad.setColorAt(0.0, QColor(C_GROOVE))
+        bg_grad.setColorAt(0.02, QColor(C_PANEL_INSET))
+        bg_grad.setColorAt(0.98, QColor(C_PANEL_INSET))
+        bg_grad.setColorAt(1.0, QColor(C_GROOVE))
+        painter.fillRect(0, 0, w, h, bg_grad)
+
+        # ── Chrome bezel border ──
+        painter.setPen(QPen(QColor(C_GROOVE), 2))
+        painter.drawRect(1, 1, w - 2, h - 2)
+        painter.setPen(QPen(QColor(C_RIDGE), 1))
+        painter.drawLine(2, 2, w - 3, 2)  # Top highlight
+        painter.drawLine(2, 2, 2, h - 3)  # Left highlight
+
+        # ── Graph background ──
+        painter.fillRect(int(graph_left), int(graph_top),
+                        int(graph_width), int(graph_height),
+                        QColor("#080810"))
+
+        # ── Grid lines (subtle) ──
+        # Vertical lines at frequency markers
+        painter.setPen(QPen(QColor(40, 40, 48), 1, Qt.PenStyle.DotLine))
+        for freq in self.FREQ_VALUES:
+            x = self._freq_to_x(freq, graph_left, graph_width)
+            painter.drawLine(int(x), int(graph_top), int(x), int(graph_top + graph_height))
+
+        # Horizontal lines at dB markers
+        for db in [-12, -6, 0, 6, 12]:
+            y = self._db_to_y(db, graph_top, graph_height)
+            if db == 0:
+                painter.setPen(QPen(QColor(60, 60, 70), 1))  # 0dB line brighter
+            else:
+                painter.setPen(QPen(QColor(40, 40, 48), 1, Qt.PenStyle.DotLine))
+            painter.drawLine(int(graph_left), int(y), int(graph_left + graph_width), int(y))
+
+        # ── Frequency labels (bottom) ──
+        painter.setFont(QFont("Menlo", 7))
+        painter.setPen(QColor(C_CREAM_DARK))
+        for freq, label in zip(self.FREQ_VALUES, self.FREQ_LABELS):
+            x = self._freq_to_x(freq, graph_left, graph_width)
+            painter.drawText(int(x - 12), int(graph_top + graph_height + 15), label)
+
+        # ── dB labels (left) ──
+        for db in [-12, -6, 0, 6, 12]:
+            y = self._db_to_y(db, graph_top, graph_height)
+            text = f"{db:+d}" if db != 0 else " 0"
+            painter.drawText(5, int(y + 4), f"{text} dB")
+
+        # ── Title ──
+        painter.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
+        painter.setPen(QColor(C_MOD_EQ))
+        painter.drawText(int(graph_left + 5), int(graph_top - 8), "PARAMETRIC EQ — FREQUENCY RESPONSE")
+
+        # ── Build EQ curve path ──
+        num_points = 200
+        from PyQt6.QtCore import QPointF
+
+        curve_path = QPainterPath()
+        fill_path = QPainterPath()
+
+        zero_y = self._db_to_y(0, graph_top, graph_height)
+        first_x = graph_left
+
+        points = []
+        for i in range(num_points + 1):
+            x = graph_left + (i / num_points) * graph_width
+            db = self._interpolate_curve(x, graph_left, graph_width)
+            y = self._db_to_y(db, graph_top, graph_height)
+            points.append((x, y))
+
+        # Build curve path
+        if points:
+            curve_path.moveTo(points[0][0], points[0][1])
+            for px, py in points[1:]:
+                curve_path.lineTo(px, py)
+
+            # Build fill path (curve + baseline)
+            fill_path.moveTo(points[0][0], zero_y)
+            for px, py in points:
+                fill_path.lineTo(px, py)
+            fill_path.lineTo(points[-1][0], zero_y)
+            fill_path.closeSubpath()
+
+        # ── Fill under curve with gradient (teal left → magenta right) ──
+        fill_grad = QLinearGradient(graph_left, 0, graph_left + graph_width, 0)
+        fill_grad.setColorAt(0.0, QColor(0, 180, 216, 40))    # Teal transparent
+        fill_grad.setColorAt(0.3, QColor(79, 195, 247, 50))    # Light blue
+        fill_grad.setColorAt(0.5, QColor(206, 147, 216, 40))   # Purple
+        fill_grad.setColorAt(0.7, QColor(255, 138, 101, 50))   # Orange
+        fill_grad.setColorAt(1.0, QColor(229, 57, 53, 40))     # Red transparent
+
+        painter.setBrush(QBrush(fill_grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(fill_path)
+
+        # ── Draw curve line with glow ──
+        # Glow (wider, semi-transparent)
+        glow_pen = QPen(QColor(79, 195, 247, 80), 5)
+        painter.setPen(glow_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(curve_path)
+
+        # Main curve line
+        curve_grad = QLinearGradient(graph_left, 0, graph_left + graph_width, 0)
+        curve_grad.setColorAt(0.0, QColor(C_TEAL))
+        curve_grad.setColorAt(0.3, QColor(C_MOD_EQ))
+        curve_grad.setColorAt(0.6, QColor(C_MOD_IMG))
+        curve_grad.setColorAt(1.0, QColor(C_LED_RED))
+
+        painter.setPen(QPen(QBrush(curve_grad), 2.5))
+        painter.drawPath(curve_path)
+
+        # ── Draw band nodes ──
+        freq_labels = ["32", "64", "125", "250", "1K", "4K", "8K", "16K"]
+        for i in range(8):
+            bx, by = self._get_band_pos(i, graph_left, graph_top, graph_width, graph_height)
+
+            is_active = abs(self.gains[i]) > 0.1
+            is_hover = (self._hover_band == i) or (self._dragging_band == i)
+
+            node_color = QColor(self.BAND_COLORS[i])
+
+            # Node glow
+            if is_hover or is_active:
+                glow = QRadialGradient(bx, by, 18)
+                glow.setColorAt(0.0, QColor(node_color.red(), node_color.green(), node_color.blue(), 100))
+                glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+                painter.setBrush(QBrush(glow))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(int(bx - 18), int(by - 18), 36, 36)
+
+            # Node circle
+            radius = 8 if is_hover else 6
+            painter.setBrush(QBrush(node_color))
+            painter.setPen(QPen(QColor("#FFFFFF" if is_hover else C_PANEL_INSET), 2))
+            painter.drawEllipse(int(bx - radius), int(by - radius), radius * 2, radius * 2)
+
+            # Band label near node
+            if is_hover or is_active:
+                painter.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
+                painter.setPen(node_color)
+                label_text = f"{freq_labels[i]} {self.gains[i]:+.1f}dB"
+                painter.drawText(int(bx - 20), int(by - 14), label_text)
+
+        painter.end()
+
+
+# ══════════════════════════════════════════════════
+#  Vintage Rotary Knob Widget (SSL G-Master Style)
+#  Big chunky rotary dial with 3D metallic body, pointer, ticks
+# ══════════════════════════════════════════════════
+
+class VintageKnobWidget(QWidget):
+    """SSL/Waves-style vintage rotary knob control.
+
+    Features:
+    - 3D metallic knob body with conical gradient
+    - Pointer indicator line showing current position
+    - Tick marks around perimeter
+    - Value display below knob
+    - Label above knob
+    - Mouse drag to adjust value (up/down)
+
+    Signals:
+    - valueChanged(float): Emitted when value changes interactively
+    """
+
+    valueChanged = pyqtSignal(float)
+
+    def __init__(self, label="", min_val=0.0, max_val=100.0, default=50.0,
+                 suffix="", step=0.5, decimals=1, color=None, parent=None):
+        """
+        Initialize vintage knob widget.
+
+        Args:
+            label: Text label above knob (e.g., "THRESHOLD")
+            min_val: Minimum value
+            max_val: Maximum value
+            default: Initial value
+            suffix: Unit suffix (e.g., " dB", ":1", " ms")
+            step: Value change per pixel dragged
+            decimals: Decimal places for display
+            color: Accent color for pointer (default C_AMBER)
+            parent: Parent widget
+        """
+        super().__init__(parent)
+
+        self.label = label
+        self.min_val = min_val
+        self.max_val = max_val
+        self.value_data = default
+        self.suffix = suffix
+        self.step = step
+        self.decimals = decimals
+        self.color = color or C_AMBER
+
+        # Interaction state
+        self._dragging = False
+        self._drag_start_y = 0
+
+        # Appearance: fixed size with space for label above, value below
+        self.setFixedSize(80, 110)
+        self.setMouseTracking(True)
+
+    def value(self) -> float:
+        """Get current value without emitting signal."""
+        return self.value_data
+
+    def setValue(self, val: float):
+        """Set value without emitting signal (used for preset loading)."""
+        self.value_data = max(self.min_val, min(self.max_val, val))
+        self.update()
+
+    def setValueEmit(self, val: float):
+        """Set value and emit signal (used for interactive changes)."""
+        clamped = max(self.min_val, min(self.max_val, val))
+        if abs(clamped - self.value_data) > 1e-6:
+            self.value_data = clamped
+            self.valueChanged.emit(clamped)
+            self.update()
+
+    def paintEvent(self, event):
+        """Paint the vintage knob with 3D metallic appearance."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        # Widget dimensions
+        w, h = self.width(), self.height()
+        knob_size = 60
+        knob_x = (w - knob_size) // 2  # 10
+        knob_y = 20  # below label area
+        knob_cx = knob_x + knob_size // 2  # 40
+        knob_cy = knob_y + knob_size // 2  # 50
+
+        # ── Draw Label (above knob, small, uppercase, GOLD)
+        painter.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
+        painter.setPen(QColor(C_GOLD))
+        painter.drawText(0, 0, w, 16, Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter, self.label)
+
+        # ── Draw Outer Chrome Ring (subtle highlight)
+        ring_gradient = QConicalGradient(knob_cx, knob_cy, 0)
+        ring_gradient.setColorAt(0.0, QColor("#505058"))
+        ring_gradient.setColorAt(0.25, QColor("#707078"))
+        ring_gradient.setColorAt(0.5, QColor("#505058"))
+        ring_gradient.setColorAt(0.75, QColor("#606068"))
+        ring_gradient.setColorAt(1.0, QColor("#505058"))
+        painter.setBrush(QBrush(ring_gradient))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(knob_x - 2, knob_y - 2, knob_size + 4, knob_size + 4)
+
+        # ── Draw Main Knob Body (conical gradient for 3D metal look)
+        body_gradient = QConicalGradient(knob_cx, knob_cy, 0)
+        body_gradient.setColorAt(0.0, QColor("#2A2A30"))
+        body_gradient.setColorAt(0.25, QColor("#3E3E46"))
+        body_gradient.setColorAt(0.5, QColor("#2A2A30"))
+        body_gradient.setColorAt(0.75, QColor("#383840"))
+        body_gradient.setColorAt(1.0, QColor("#2A2A30"))
+        painter.setBrush(QBrush(body_gradient))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(knob_x, knob_y, knob_size, knob_size)
+
+        # ── Draw Inner Recessed Center Plate (dark, slightly beveled)
+        inner_size = 48
+        inner_x = knob_x + (knob_size - inner_size) // 2
+        inner_y = knob_y + (knob_size - inner_size) // 2
+        inner_cx = inner_x + inner_size // 2
+        inner_cy = inner_y + inner_size // 2
+
+        inner_gradient = QRadialGradient(inner_cx - 3, inner_cy - 3, inner_size // 2)
+        inner_gradient.setColorAt(0.0, QColor("#1E1E22"))
+        inner_gradient.setColorAt(0.5, QColor("#0E0E10"))
+        inner_gradient.setColorAt(1.0, QColor("#0A0A0C"))
+        painter.setBrush(QBrush(inner_gradient))
+        painter.setPen(QPen(QColor("#0A0A0C"), 1))
+        painter.drawEllipse(inner_x, inner_y, inner_size, inner_size)
+
+        # ── Draw Tick Marks (11 ticks, from 225° to -45° = 270° range, SSL style)
+        start_angle = 225  # 7 o'clock
+        end_angle = -45     # 5 o'clock (equivalent to 315°)
+        angle_range = 270   # degrees
+        num_ticks = 11
+
+        painter.setPen(QPen(QColor("#4A4A52"), 1.5))
+        for i in range(num_ticks):
+            angle_frac = i / (num_ticks - 1)  # 0.0 to 1.0
+            angle_deg = start_angle - (angle_frac * angle_range)
+            angle_rad = math.radians(angle_deg)
+
+            # Tick outer and inner radius
+            tick_outer_r = knob_size // 2
+            tick_inner_r = knob_size // 2 - 6
+
+            tick_x1 = knob_cx + tick_outer_r * math.cos(angle_rad)
+            tick_y1 = knob_cy + tick_outer_r * math.sin(angle_rad)
+            tick_x2 = knob_cx + tick_inner_r * math.cos(angle_rad)
+            tick_y2 = knob_cy + tick_inner_r * math.sin(angle_rad)
+
+            painter.drawLine(int(tick_x1), int(tick_y1), int(tick_x2), int(tick_y2))
+
+        # ── Draw Pointer Line (from center outward, showing current value position)
+        value_frac = (self.value_data - self.min_val) / (self.max_val - self.min_val)
+        value_frac = max(0.0, min(1.0, value_frac))
+        pointer_angle_deg = start_angle - (value_frac * angle_range)
+        pointer_angle_rad = math.radians(pointer_angle_deg)
+
+        pointer_r_inner = 8
+        pointer_r_outer = 26
+
+        pointer_x1 = knob_cx + pointer_r_inner * math.cos(pointer_angle_rad)
+        pointer_y1 = knob_cy + pointer_r_inner * math.sin(pointer_angle_rad)
+        pointer_x2 = knob_cx + pointer_r_outer * math.cos(pointer_angle_rad)
+        pointer_y2 = knob_cy + pointer_r_outer * math.sin(pointer_angle_rad)
+
+        # Draw pointer with glow effect
+        painter.setPen(QPen(QColor(self.color), 2.5))
+        painter.drawLine(int(pointer_x1), int(pointer_y1), int(pointer_x2), int(pointer_y2))
+
+        # Subtle glow around pointer
+        painter.setPen(QPen(QColor(self.color + "40"), 1))
+        painter.drawLine(int(pointer_x1 - 1), int(pointer_y1 - 1), int(pointer_x2 - 1), int(pointer_y2 - 1))
+
+        # ── Draw Value Text Below Knob
+        value_str = f"{self.value_data:.{self.decimals}f}{self.suffix}"
+        painter.setFont(QFont("Menlo", 9, QFont.Weight.Bold))
+        painter.setPen(QColor(C_AMBER_GLOW))
+        value_y = knob_y + knob_size + 8
+        painter.drawText(0, value_y, w, h - value_y, Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop, value_str)
+
+        painter.end()
+
+    def mousePressEvent(self, event):
+        """Start drag interaction."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._drag_start_y = event.y()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        """Update value based on vertical drag."""
+        if self._dragging:
+            delta_y = self._drag_start_y - event.y()  # up = positive
+            delta_value = delta_y * self.step
+            new_value = self.value_data + delta_value
+            self.setValueEmit(new_value)
+            self._drag_start_y = event.y()
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        """End drag interaction."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            event.accept()
+
+    def wheelEvent(self, event):
+        """Handle mouse wheel for fine adjustment."""
+        delta = event.angleDelta().y()
+        steps = (delta / 120) * self.step * 3
+        new_value = self.value_data + steps
+        self.setValueEmit(new_value)
+        event.accept()
+
+
+# ══════════════════════════════════════════════════
+#  Dynamics Compressor Curve Widget (Waves-Style)
+#  Shows transfer curve, gain reduction meter, and info readouts
+# ══════════════════════════════════════════════════
+
+class DynamicsCurveWidget(QWidget):
+    """Waves-style Dynamics Compressor visualization widget.
+
+    Left side: Transfer curve with grid, threshold line, knee highlight
+    Right side: Gain reduction LED meter (0 to -20 dB)
+    Bottom: Parameter readout (THR, RATIO, ATK, REL, GR, MU)
+
+    Interactive: drag threshold line, drag curve to adjust ratio
+    """
+
+    thresholdChanged = pyqtSignal(float)  # emits new threshold dB
+    ratioChanged = pyqtSignal(float)      # emits new ratio value
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(220)
+        self.setMinimumWidth(500)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        # Compressor parameters
+        self.threshold = -16.0     # dB
+        self.ratio = 2.5           # :1
+        self.knee = 6.0            # dB
+        self.attack = 10.0         # ms
+        self.release = 100.0       # ms
+        self.makeup = 0.0          # dB
+        self.gain_reduction = 0.0  # dB (0 to -20)
+
+        # Interactive state
+        self._dragging_threshold = False
+        self._dragging_ratio = False
+        self._drag_start_x = 0
+
+        self.setMouseTracking(True)
+
+    # ── Property Setters ──
+    def setThreshold(self, db: float):
+        """Set threshold in dB (-60 to 0)"""
+        self.threshold = max(-60, min(0, db))
+        self.update()
+
+    def setRatio(self, ratio: float):
+        """Set compression ratio (1.0 to 20.0)"""
+        self.ratio = max(1.0, min(20.0, ratio))
+        self.update()
+
+    def setKnee(self, db: float):
+        """Set soft knee in dB (0 to 20)"""
+        self.knee = max(0, min(20, db))
+        self.update()
+
+    def setAttack(self, ms: float):
+        """Set attack time in ms (display only)"""
+        self.attack = max(0.1, ms)
+        self.update()
+
+    def setRelease(self, ms: float):
+        """Set release time in ms (display only)"""
+        self.release = max(10, ms)
+        self.update()
+
+    def setMakeup(self, db: float):
+        """Set makeup gain in dB (display only)"""
+        self.makeup = db
+        self.update()
+
+    def setGainReduction(self, db: float):
+        """Set gain reduction for meter (-20 to 0 dB)"""
+        self.gain_reduction = max(-20, min(0, db))
+        self.update()
+
+    # ── Coordinate Conversion ──
+    def _db_to_x(self, db: float, left: float, width: float) -> float:
+        """Convert dB level to X position (linear scale -60 to 0)"""
+        # -60 dB at left, 0 dB at right
+        normalized = (db + 60.0) / 60.0
+        return left + normalized * width
+
+    def _db_to_y(self, db: float, top: float, height: float) -> float:
+        """Convert dB level to Y position (linear scale -60 to 0)"""
+        # -60 dB at bottom, 0 dB at top
+        normalized = (db + 60.0) / 60.0
+        return top + height - normalized * height
+
+    def _x_to_db(self, x: float, left: float, width: float) -> float:
+        """Convert X position to dB"""
+        if width <= 0:
+            return -60
+        normalized = (x - left) / width
+        return -60 + normalized * 60.0
+
+    def _y_to_db(self, y: float, top: float, height: float) -> float:
+        """Convert Y position to dB"""
+        if height <= 0:
+            return -60
+        normalized = (top + height - y) / height
+        return -60 + normalized * 60.0
+
+    # ── Compressor Transfer Curve ──
+    def _compute_compression(self, input_db: float) -> float:
+        """Compute output dB given input dB using compression parameters."""
+        if input_db < self.threshold - self.knee / 2:
+            # Below knee: no compression
+            return input_db
+        elif input_db > self.threshold + self.knee / 2:
+            # Above knee: full compression
+            excess = input_db - self.threshold
+            output = self.threshold + excess / self.ratio
+            return output
+        else:
+            # In knee region: smooth transition
+            knee_start = self.threshold - self.knee / 2
+            knee_end = self.threshold + self.knee / 2
+            alpha = (input_db - knee_start) / self.knee  # 0..1
+
+            # Linear interpolation between uncompressed and compressed
+            uncompressed = input_db
+            excess = input_db - self.threshold
+            compressed = self.threshold + excess / self.ratio
+
+            output = uncompressed * (1 - alpha) + compressed * alpha
+            return output
+
+    # ── Mouse Events ──
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        # Layout dimensions
+        margin_left = 60
+        margin_right = 100
+        margin_top = 25
+        margin_bottom = 80
+
+        graph_left = margin_left
+        graph_top = margin_top
+        graph_width = self.width() * 0.6
+        graph_height = self.height() - margin_top - margin_bottom
+
+        mx = event.position().x()
+        my = event.position().y()
+
+        # Check if clicking on threshold line
+        thr_x = self._db_to_x(self.threshold, graph_left, graph_width)
+        if abs(mx - thr_x) < 8 and graph_top <= my <= graph_top + graph_height:
+            self._dragging_threshold = True
+            self._drag_start_x = mx
+            return
+
+        # Check if clicking on curve (for ratio adjustment)
+        # Approximate hit region around curve
+        for test_db in range(-60, 1):
+            curve_y = self._db_to_y(self._compute_compression(test_db), graph_top, graph_height)
+            if abs(my - curve_y) < 8 and graph_left <= mx <= graph_left + graph_width:
+                self._dragging_ratio = True
+                self._drag_start_x = mx
+                return
+
+    def mouseMoveEvent(self, event):
+        mx = event.position().x()
+
+        margin_left = 60
+        margin_right = 100
+        margin_top = 25
+        margin_bottom = 80
+
+        graph_left = margin_left
+        graph_width = self.width() * 0.6
+
+        if self._dragging_threshold:
+            # Constrain threshold within visible range
+            new_threshold = self._x_to_db(mx, graph_left, graph_width)
+            new_threshold = max(-60, min(0, new_threshold))
+            if abs(new_threshold - self.threshold) > 0.1:
+                self.threshold = new_threshold
+                self.thresholdChanged.emit(self.threshold)
+                self.update()
+
+        elif self._dragging_ratio:
+            # Adjust ratio based on drag distance
+            delta_x = mx - self._drag_start_x
+            ratio_change = delta_x * 0.05  # Sensitivity: 5% per pixel
+            new_ratio = max(1.0, min(20.0, self.ratio + ratio_change))
+            if abs(new_ratio - self.ratio) > 0.05:
+                self.ratio = new_ratio
+                self.ratioChanged.emit(self.ratio)
+                self._drag_start_x = mx
+                self.update()
+
+    def mouseReleaseEvent(self, event):
+        self._dragging_threshold = False
+        self._dragging_ratio = False
+
+    # ── Paint Event ──
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+
+        # Layout constants
+        margin_left = 60
+        margin_right = 100
+        margin_top = 25
+        margin_bottom = 80
+
+        graph_left = margin_left
+        graph_top = margin_top
+        graph_width = w * 0.6
+        graph_height = h - margin_top - margin_bottom
+
+        meter_left = graph_left + graph_width + 15
+        meter_width = 25
+        meter_height = graph_height
+
+        # ── Background: deep black panel ──
+        bg_grad = QLinearGradient(0, 0, 0, h)
+        bg_grad.setColorAt(0.0, QColor(C_GROOVE))
+        bg_grad.setColorAt(0.02, QColor(C_PANEL_INSET))
+        bg_grad.setColorAt(0.98, QColor(C_PANEL_INSET))
+        bg_grad.setColorAt(1.0, QColor(C_GROOVE))
+        painter.fillRect(0, 0, w, h, bg_grad)
+
+        # ── Graph Area Background ──
+        painter.fillRect(int(graph_left), int(graph_top),
+                        int(graph_width), int(graph_height),
+                        QColor("#0A0A0C"))
+
+        # Chrome bezel (groove + ridge)
+        painter.setPen(QPen(QColor(C_GROOVE), 2))
+        painter.drawRect(int(graph_left), int(graph_top),
+                        int(graph_width), int(graph_height))
+        painter.setPen(QPen(QColor(C_RIDGE), 1))
+        painter.drawLine(int(graph_left + 1), int(graph_top + 1),
+                        int(graph_left + graph_width - 1), int(graph_top + 1))
+        painter.drawLine(int(graph_left + 1), int(graph_top + 1),
+                        int(graph_left + 1), int(graph_top + graph_height - 1))
+
+        # ── Grid Lines ──
+        painter.setPen(QPen(QColor(40, 40, 48), 1, Qt.PenStyle.DotLine))
+        for db in [-48, -36, -24, -12, -6]:
+            y = self._db_to_y(db, graph_top, graph_height)
+            painter.drawLine(int(graph_left), int(y),
+                           int(graph_left + graph_width), int(y))
+
+        for db in [-48, -36, -24, -12, -6]:
+            x = self._db_to_x(db, graph_left, graph_width)
+            painter.drawLine(int(x), int(graph_top),
+                           int(x), int(graph_top + graph_height))
+
+        # Brighter 0 dB lines
+        painter.setPen(QPen(QColor(60, 60, 70), 1))
+        y_zero = self._db_to_y(0, graph_top, graph_height)
+        x_zero = self._db_to_x(0, graph_left, graph_width)
+        painter.drawLine(int(graph_left), int(y_zero),
+                        int(graph_left + graph_width), int(y_zero))
+        painter.drawLine(int(x_zero), int(graph_top),
+                        int(x_zero), int(graph_top + graph_height))
+
+        # ── Reference 1:1 Line (dashed) ──
+        painter.setPen(QPen(QColor(C_CREAM_DIM), 1, Qt.PenStyle.DashLine))
+        ref_start_x = graph_left
+        ref_start_y = self._db_to_y(0, graph_top, graph_height)  # 0 dB input → 0 dB output
+        ref_end_x = graph_left + graph_width
+        ref_end_y = self._db_to_y(-60, graph_top, graph_height)  # -60 dB input → -60 dB output
+        painter.drawLine(int(ref_start_x), int(ref_start_y),
+                        int(ref_end_x), int(ref_end_y))
+
+        # ── Compression Curve Path ──
+        curve_path = QPainterPath()
+        fill_path = QPainterPath()
+
+        num_points = 150
+        points = []
+        for i in range(num_points + 1):
+            input_db = -60 + (i / num_points) * 60
+            output_db = self._compute_compression(input_db)
+            x = self._db_to_x(input_db, graph_left, graph_width)
+            y = self._db_to_y(output_db, graph_top, graph_height)
+            points.append((x, y, input_db, output_db))
+
+        if points:
+            # Curve path
+            curve_path.moveTo(points[0][0], points[0][1])
+            for x, y, _, _ in points[1:]:
+                curve_path.lineTo(x, y)
+
+            # Fill path: curve + reference line
+            ref_start_y = self._db_to_y(0, graph_top, graph_height)
+            fill_path.moveTo(points[0][0], ref_start_y)
+            for x, y, _, _ in points:
+                fill_path.lineTo(x, y)
+            fill_path.lineTo(points[-1][0], ref_start_y)
+            fill_path.closeSubpath()
+
+        # Fill under curve (gain reduction area)
+        fill_grad = QLinearGradient(0, 0, 0, graph_top + graph_height)
+        fill_grad.setColorAt(0.0, QColor(255, 138, 101, 60))   # Orange transparent
+        fill_grad.setColorAt(1.0, QColor(229, 57, 53, 40))     # Red transparent
+        painter.setBrush(QBrush(fill_grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(fill_path)
+
+        # Draw curve with glow
+        glow_pen = QPen(QColor(255, 138, 101, 100), 5)
+        painter.setPen(glow_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(curve_path)
+
+        # Main curve line
+        curve_grad = QLinearGradient(graph_left, 0, graph_left + graph_width, 0)
+        curve_grad.setColorAt(0.0, QColor(C_MOD_DYN))
+        curve_grad.setColorAt(1.0, QColor(C_LED_RED))
+        painter.setPen(QPen(QBrush(curve_grad), 2.5))
+        painter.drawPath(curve_path)
+
+        # ── Knee Highlight (subtle zone) ──
+        knee_top_db = self.threshold + self.knee / 2
+        knee_bot_db = self.threshold - self.knee / 2
+        knee_x_bot = self._db_to_x(knee_bot_db, graph_left, graph_width)
+        knee_x_top = self._db_to_x(knee_top_db, graph_left, graph_width)
+        knee_width = knee_x_top - knee_x_bot
+
+        painter.fillRect(int(knee_x_bot), int(graph_top),
+                        int(knee_width), int(graph_height),
+                        QColor(255, 138, 101, 15))  # Subtle orange highlight
+
+        # ── Threshold Line (vertical dashed) ──
+        thr_x = self._db_to_x(self.threshold, graph_left, graph_width)
+        painter.setPen(QPen(QColor(C_AMBER_GLOW), 1.5, Qt.PenStyle.DashLine))
+        painter.drawLine(int(thr_x), int(graph_top),
+                        int(thr_x), int(graph_top + graph_height))
+
+        # Threshold label
+        painter.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
+        painter.setPen(QColor(C_AMBER_GLOW))
+        painter.drawText(int(thr_x - 15), int(graph_top - 3),
+                        f"THR")
+
+        # ── Axis Labels ──
+        painter.setFont(QFont("Menlo", 7))
+        painter.setPen(QColor(C_CREAM_DIM))
+
+        # X-axis labels (input dB)
+        for db in [-60, -48, -36, -24, -12, 0]:
+            x = self._db_to_x(db, graph_left, graph_width)
+            painter.drawText(int(x - 10), int(graph_top + graph_height + 12),
+                           f"{db}")
+
+        # Y-axis labels (output dB)
+        for db in [-60, -48, -36, -24, -12, 0]:
+            y = self._db_to_y(db, graph_top, graph_height)
+            painter.drawText(int(graph_left - 30), int(y + 3),
+                           f"{db}")
+
+        # Axis titles
+        painter.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
+        painter.setPen(QColor(C_GOLD))
+        painter.drawText(int(graph_left + graph_width / 2 - 30),
+                        int(graph_top + graph_height + 25),
+                        "INPUT (dB)")
+
+        # ── Gain Reduction Meter (right side) ──
+        meter_top = graph_top
+        meter_left_pos = graph_left + graph_width + 15
+
+        # Meter background
+        painter.fillRect(int(meter_left_pos - 5), int(meter_top),
+                        int(meter_width + 10), int(meter_height),
+                        QColor(C_PANEL_INSET))
+
+        # GR label
+        painter.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
+        painter.setPen(QColor(C_GOLD))
+        painter.drawText(int(meter_left_pos - 8), int(meter_top - 10),
+                        "GR")
+
+        # Meter segments (20 segments for -20 dB range)
+        num_segments = 20
+        segment_height = meter_height / num_segments
+
+        for i in range(num_segments):
+            segment_db = -(20 - i)  # 0 at top, -20 at bottom
+            y = meter_top + i * segment_height
+
+            # Determine color based on GR
+            if segment_db >= self.gain_reduction:
+                if segment_db >= -3:
+                    color = QColor(C_LED_GREEN)
+                elif segment_db >= -8:
+                    color = QColor(C_LED_YELLOW)
+                elif segment_db >= -14:
+                    color = QColor(C_MOD_DYN)  # Orange
+                else:
+                    color = QColor(C_LED_RED)
+            else:
+                color = QColor(50, 50, 60)  # Dimmed
+
+            # Draw rounded segment
+            from PyQt6.QtCore import QRectF
+            segment_rect = QRectF(meter_left_pos, y, meter_width, segment_height - 1)
+            painter.fillRect(segment_rect, color)
+            painter.setPen(QPen(QColor(30, 30, 40), 0.5))
+            painter.drawRect(segment_rect)
+
+        # Meter scale labels (right side)
+        painter.setFont(QFont("Menlo", 6))
+        painter.setPen(QColor(C_CREAM_DIM))
+        scale_labels = [(0, "0"), (-3, "-3"), (-6, "-6"), (-10, "-10"), (-15, "-15"), (-20, "-20")]
+        for db, label in scale_labels:
+            y = self._db_to_y(db, meter_top, meter_height)
+            painter.drawText(int(meter_left_pos + meter_width + 5), int(y + 2),
+                           label)
+
+        # Current GR value display
+        painter.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
+        painter.setPen(QColor(C_AMBER_GLOW))
+        gr_text = f"{self.gain_reduction:.1f}"
+        painter.drawText(int(meter_left_pos - 5), int(meter_top + meter_height + 25),
+                        gr_text)
+
+        # ── Parameter Readouts (bottom-right) ──
+        readout_left = graph_left + graph_width - 140
+        readout_top = graph_top + graph_height + 40
+
+        painter.setFont(QFont("Menlo", 8))
+        painter.setPen(QColor(C_AMBER_GLOW))
+
+        readouts = [
+            f"THR: {self.threshold:.1f} dB",
+            f"RATIO: {self.ratio:.2f}:1",
+            f"ATK: {self.attack:.0f} ms",
+            f"REL: {self.release:.0f} ms",
+            f"GR: {self.gain_reduction:.1f} dB",
+            f"MU: {self.makeup:.1f} dB",
+        ]
+
+        for i, text in enumerate(readouts):
+            y = readout_top + i * 14
+            painter.drawText(int(readout_left), int(y), text)
+
+        # ── Title ──
+        painter.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
+        painter.setPen(QColor(C_MOD_DYN))
+        painter.drawText(int(graph_left + 5), int(graph_top - 8),
+                        "COMPRESSOR — TRANSFER CURVE")
+
+        painter.end()
+
+
+# ══════════════════════════════════════════════════
+#  Analog Hardware Decoration Widget
+#  (VU Arcs, Signal Flow, Rack Screws, Engraved Plates)
+# ══════════════════════════════════════════════════
+
+class HardwareDecoration(QWidget):
+    """
+    Custom-painted analog hardware decoration panel.
+    Fills empty space with authentic-looking console elements:
+    - Rack screw holes at corners
+    - Signal flow diagram with module chain
+    - Decorative VU meter arcs
+    - Brushed-metal texture
+    - Engraved brand plate
+    - LED dot indicators
+    """
+
+    # Decoration modes
+    MODE_SIGNAL_FLOW = "signal_flow"      # Full signal flow diagram (AI Assist)
+    MODE_VU_PANEL    = "vu_panel"         # Decorative VU arcs (EQ, Imager)
+    MODE_RACK_PLATE  = "rack_plate"       # Minimal rack plate (Dynamics, Maximizer)
+
+    def __init__(self, mode=MODE_SIGNAL_FLOW, parent=None):
+        super().__init__(parent)
+        self.mode = mode
+        self.setMinimumHeight(120 if mode == self.MODE_RACK_PLATE else 180)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+
+        # ── Background: brushed metal panel ──
+        bg_grad = QLinearGradient(0, 0, 0, h)
+        bg_grad.setColorAt(0.0, QColor(C_PANEL_INSET))
+        bg_grad.setColorAt(0.03, QColor(C_PANEL))
+        bg_grad.setColorAt(0.5, QColor(C_PANEL_LIGHT))
+        bg_grad.setColorAt(0.97, QColor(C_PANEL))
+        bg_grad.setColorAt(1.0, QColor(C_GROOVE))
+        painter.fillRect(0, 0, w, h, bg_grad)
+
+        # ── Top groove line ──
+        painter.setPen(QPen(QColor(C_GROOVE), 2))
+        painter.drawLine(0, 1, w, 1)
+        painter.setPen(QPen(QColor(C_RIDGE), 1))
+        painter.drawLine(0, 3, w, 3)
+
+        # ── Bottom groove line ──
+        painter.setPen(QPen(QColor(C_GROOVE), 2))
+        painter.drawLine(0, h - 2, w, h - 2)
+        painter.setPen(QPen(QColor(C_RIDGE), 1))
+        painter.drawLine(0, h - 4, w, h - 4)
+
+        # ── Rack screws at corners ──
+        self._draw_rack_screws(painter, w, h)
+
+        # ── Horizontal brushed metal lines (subtle texture) ──
+        painter.setPen(QPen(QColor(58, 58, 62, 30), 1))
+        for y_line in range(10, h - 10, 3):
+            painter.drawLine(16, y_line, w - 16, y_line)
+
+        # ── Mode-specific content ──
+        if self.mode == self.MODE_SIGNAL_FLOW:
+            self._draw_signal_flow(painter, w, h)
+        elif self.mode == self.MODE_VU_PANEL:
+            self._draw_vu_arcs(painter, w, h)
+        elif self.mode == self.MODE_RACK_PLATE:
+            self._draw_rack_plate(painter, w, h)
+
+        painter.end()
+
+    def _draw_rack_screws(self, painter, w, h):
+        """Draw Phillips-head rack screws at corners."""
+        screw_positions = [
+            (14, 14), (w - 14, 14),
+            (14, h - 14), (w - 14, h - 14),
+        ]
+        for sx, sy in screw_positions:
+            # Screw body — radial gradient for 3D look
+            screw_grad = QRadialGradient(sx - 1, sy - 1, 7)
+            screw_grad.setColorAt(0.0, QColor(100, 100, 105))
+            screw_grad.setColorAt(0.5, QColor(75, 75, 80))
+            screw_grad.setColorAt(0.85, QColor(55, 55, 60))
+            screw_grad.setColorAt(1.0, QColor(35, 35, 38))
+            painter.setBrush(QBrush(screw_grad))
+            painter.setPen(QPen(QColor(30, 30, 32), 1))
+            painter.drawEllipse(sx - 6, sy - 6, 12, 12)
+
+            # Phillips cross
+            painter.setPen(QPen(QColor(40, 40, 44), 1.5))
+            painter.drawLine(sx - 3, sy, sx + 3, sy)
+            painter.drawLine(sx, sy - 3, sx, sy + 3)
+
+    def _draw_signal_flow(self, painter, w, h):
+        """Draw the master chain signal flow diagram."""
+        cy = h // 2 + 5
+        modules = ["INPUT", "EQ", "DYN", "IMG", "MAX", "OUTPUT"]
+        n = len(modules)
+        spacing = (w - 80) / (n - 1)
+        start_x = 40
+
+        # ── "SIGNAL FLOW" engraved title ──
+        title_font = QFont("Menlo", 8, QFont.Weight.Bold)
+        painter.setFont(title_font)
+        painter.setPen(QPen(QColor(C_CREAM_DARK), 1))
+        painter.drawText(start_x, cy - 42, "SIGNAL  FLOW  —  MASTER  CHAIN")
+
+        # ── Brand plate ──
+        plate_y = cy + 38
+        plate_w = 200
+        plate_x = (w - plate_w) // 2
+        plate_h = 22
+        plate_grad = QLinearGradient(plate_x, plate_y, plate_x, plate_y + plate_h)
+        plate_grad.setColorAt(0.0, QColor(50, 50, 54))
+        plate_grad.setColorAt(0.5, QColor(62, 62, 67))
+        plate_grad.setColorAt(1.0, QColor(45, 45, 49))
+        painter.setBrush(QBrush(plate_grad))
+        painter.setPen(QPen(QColor(C_GROOVE), 1))
+        painter.drawRoundedRect(plate_x, plate_y, plate_w, plate_h, 3, 3)
+
+        brand_font = QFont("Menlo", 8, QFont.Weight.Bold)
+        painter.setFont(brand_font)
+        painter.setPen(QPen(QColor(C_GOLD), 1))
+        from PyQt6.QtCore import QRectF
+        painter.drawText(
+            QRectF(plate_x, plate_y, plate_w, plate_h),
+            Qt.AlignmentFlag.AlignCenter,
+            "L O N G P L A Y   S T U D I O"
+        )
+
+        # ── Draw connecting wire ──
+        wire_y = cy
+        x_first = start_x
+        x_last = start_x + (n - 1) * spacing
+
+        # Shadow wire
+        painter.setPen(QPen(QColor(C_GROOVE), 3))
+        painter.drawLine(int(x_first + 20), wire_y + 1, int(x_last - 20), wire_y + 1)
+        # Main wire
+        painter.setPen(QPen(QColor(C_AMBER_DIM), 2))
+        painter.drawLine(int(x_first + 20), wire_y, int(x_last - 20), wire_y)
+
+        # ── Draw module blocks ──
+        module_colors = {
+            "EQ": C_MOD_EQ, "DYN": C_MOD_DYN, "IMG": C_MOD_IMG,
+            "MAX": C_MOD_MAX, "INPUT": C_CREAM_DIM, "OUTPUT": C_CREAM_DIM
+        }
+        module_led_colors = {
+            "EQ": C_MOD_EQ, "DYN": C_MOD_DYN, "IMG": C_MOD_IMG, "MAX": C_MOD_MAX
+        }
+
+        for i, name in enumerate(modules):
+            cx = int(start_x + i * spacing)
+
+            # Block background
+            block_w, block_h = 38, 26
+            bx = cx - block_w // 2
+            by = cy - block_h // 2
+
+            if name in ("INPUT", "OUTPUT"):
+                # Terminal blocks — darker, round
+                term_grad = QRadialGradient(cx, cy, 18)
+                term_grad.setColorAt(0.0, QColor(C_PANEL_LIGHT))
+                term_grad.setColorAt(1.0, QColor(C_PANEL_INSET))
+                painter.setBrush(QBrush(term_grad))
+                painter.setPen(QPen(QColor(C_RIDGE), 1.5))
+                painter.drawRoundedRect(bx, by, block_w, block_h, 12, 12)
+                txt_color = QColor(C_CREAM_DIM)
+            else:
+                # Module blocks — beveled metal
+                blk_grad = QLinearGradient(bx, by, bx, by + block_h)
+                blk_grad.setColorAt(0.0, QColor(C_RIDGE))
+                blk_grad.setColorAt(0.15, QColor(C_FACEPLATE))
+                blk_grad.setColorAt(0.85, QColor(C_PANEL))
+                blk_grad.setColorAt(1.0, QColor(C_GROOVE))
+                painter.setBrush(QBrush(blk_grad))
+                painter.setPen(QPen(QColor(C_BORDER), 1))
+                painter.drawRoundedRect(bx, by, block_w, block_h, 4, 4)
+                txt_color = QColor(module_colors.get(name, C_AMBER))
+
+            # LED dot above module
+            if name not in ("INPUT", "OUTPUT"):
+                led_color = QColor(module_led_colors.get(name, C_LED_GREEN))
+                led_glow = QRadialGradient(cx, cy - block_h // 2 - 6, 5)
+                led_glow.setColorAt(0.0, led_color.lighter(150))
+                led_glow.setColorAt(0.5, led_color)
+                led_glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+                painter.setBrush(QBrush(led_glow))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(cx - 4, cy - block_h // 2 - 9, 8, 8)
+                # LED center
+                painter.setBrush(QBrush(led_color))
+                painter.drawEllipse(cx - 2, cy - block_h // 2 - 7, 4, 4)
+
+            # Arrow between modules (small triangle)
+            if i > 0 and i < n:
+                ax = int(start_x + (i - 0.5) * spacing)
+                painter.setBrush(QBrush(QColor(C_AMBER_DIM)))
+                painter.setPen(Qt.PenStyle.NoPen)
+                arrow_path = QPainterPath()
+                arrow_path.moveTo(ax - 4, cy - 4)
+                arrow_path.lineTo(ax + 4, cy)
+                arrow_path.lineTo(ax - 4, cy + 4)
+                arrow_path.closeSubpath()
+                painter.drawPath(arrow_path)
+
+            # Module label
+            label_font = QFont("Menlo", 7, QFont.Weight.Bold)
+            painter.setFont(label_font)
+            painter.setPen(QPen(txt_color, 1))
+            from PyQt6.QtCore import QRectF
+            painter.drawText(
+                QRectF(bx, by, block_w, block_h),
+                Qt.AlignmentFlag.AlignCenter,
+                name
+            )
+
+        # ── Small decorative LED strip at bottom left ──
+        led_x_start = 40
+        led_y = h - 28
+        led_colors = [C_LED_GREEN, C_LED_GREEN, C_LED_GREEN, C_LED_YELLOW,
+                      C_LED_YELLOW, C_LED_RED, C_CREAM_DARK, C_CREAM_DARK]
+        for i, lc in enumerate(led_colors):
+            lx = led_x_start + i * 10
+            painter.setBrush(QBrush(QColor(lc)))
+            painter.setPen(QPen(QColor(C_GROOVE), 1))
+            painter.drawEllipse(lx, led_y, 5, 5)
+
+        # "LEVEL" label next to LEDs
+        painter.setFont(QFont("Menlo", 6))
+        painter.setPen(QPen(QColor(C_CREAM_DARK), 1))
+        painter.drawText(led_x_start + len(led_colors) * 10 + 4, led_y + 5, "LEVEL")
+
+        # ── Small LED strip at bottom right ──
+        rled_x = w - 130
+        for i, lc in enumerate(led_colors):
+            lx = rled_x + i * 10
+            painter.setBrush(QBrush(QColor(lc)))
+            painter.setPen(QPen(QColor(C_GROOVE), 1))
+            painter.drawEllipse(lx, led_y, 5, 5)
+
+        painter.setFont(QFont("Menlo", 6))
+        painter.setPen(QPen(QColor(C_CREAM_DARK), 1))
+        painter.drawText(rled_x + len(led_colors) * 10 + 4, led_y + 5, "OUTPUT")
+
+    def _draw_vu_arcs(self, painter, w, h):
+        """Draw decorative VU meter arcs — two side by side."""
+        cy = h // 2 + 8
+        arc_r = min(w // 5, h // 2 - 20)
+
+        for side, label in enumerate(["L", "R"]):
+            cx = w // 4 + side * w // 2
+
+            # VU background circle
+            vu_bg = QRadialGradient(cx, cy, arc_r + 5)
+            vu_bg.setColorAt(0.0, QColor(C_PANEL_INSET))
+            vu_bg.setColorAt(0.8, QColor(C_PANEL))
+            vu_bg.setColorAt(1.0, QColor(C_GROOVE))
+            painter.setBrush(QBrush(vu_bg))
+            painter.setPen(QPen(QColor(C_GROOVE), 2))
+            painter.drawEllipse(cx - arc_r, cy - arc_r, arc_r * 2, arc_r * 2)
+
+            # Scale arc (from ~220 deg to ~320 deg)
+            painter.setPen(QPen(QColor(C_CREAM_DIM), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            from PyQt6.QtCore import QRectF
+            arc_rect = QRectF(
+                cx - arc_r + 10, cy - arc_r + 10,
+                (arc_r - 10) * 2, (arc_r - 10) * 2
+            )
+            painter.drawArc(arc_rect, 210 * 16, -120 * 16)
+
+            # Scale tick marks
+            for tick in range(13):
+                angle_deg = 210 - tick * 10
+                angle_rad = math.radians(angle_deg)
+                inner_r = arc_r - 14
+                outer_r = arc_r - 8
+                x1 = cx + inner_r * math.cos(angle_rad)
+                y1 = cy - inner_r * math.sin(angle_rad)
+                x2 = cx + outer_r * math.cos(angle_rad)
+                y2 = cy - outer_r * math.sin(angle_rad)
+
+                if tick >= 10:
+                    painter.setPen(QPen(QColor(C_LED_RED), 1.5))
+                elif tick >= 7:
+                    painter.setPen(QPen(QColor(C_LED_YELLOW), 1))
+                else:
+                    painter.setPen(QPen(QColor(C_CREAM_DIM), 1))
+                painter.drawLine(int(x1), int(y1), int(x2), int(y2))
+
+            # VU needle — positioned at ~-6 dB area
+            needle_angle = 190 - side * 15  # slightly different per channel
+            needle_rad = math.radians(needle_angle)
+            needle_len = arc_r - 18
+            nx = cx + needle_len * math.cos(needle_rad)
+            ny = cy - needle_len * math.sin(needle_rad)
+
+            # Needle shadow
+            painter.setPen(QPen(QColor(0, 0, 0, 80), 2))
+            painter.drawLine(cx + 1, cy + 1, int(nx) + 1, int(ny) + 1)
+            # Needle
+            painter.setPen(QPen(QColor(C_AMBER), 2.5))
+            painter.drawLine(cx, cy, int(nx), int(ny))
+
+            # Amber glow at pivot
+            pivot_glow = QRadialGradient(cx, cy, 8)
+            pivot_glow.setColorAt(0.0, QColor(C_AMBER_GLOW))
+            pivot_glow.setColorAt(0.5, QColor(C_AMBER))
+            pivot_glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+            painter.setBrush(QBrush(pivot_glow))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(cx - 6, cy - 6, 12, 12)
+
+            # Needle pivot
+            pivot_grad = QRadialGradient(cx, cy, 5)
+            pivot_grad.setColorAt(0.0, QColor(C_SCREW))
+            pivot_grad.setColorAt(1.0, QColor(C_GROOVE))
+            painter.setBrush(QBrush(pivot_grad))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(cx - 4, cy - 4, 8, 8)
+
+            # Channel label
+            painter.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+            painter.setPen(QPen(QColor(C_CREAM_DARK), 1))
+            painter.drawText(cx - 4, cy + arc_r - 4, label)
+
+        # "VU" label centered
+        painter.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
+        painter.setPen(QPen(QColor(C_GOLD), 1))
+        painter.drawText(w // 2 - 6, cy - arc_r + 20, "VU")
+
+        # Brand text
+        painter.setFont(QFont("Menlo", 6))
+        painter.setPen(QPen(QColor(C_CREAM_DARK), 1))
+        painter.drawText(w // 2 - 40, h - 18, "LONGPLAY STUDIO  ·  V5.0")
+
+    def _draw_rack_plate(self, painter, w, h):
+        """Draw a minimal rack-mount plate with model info."""
+        cy = h // 2
+
+        # Center plate
+        plate_w = min(w - 60, 320)
+        plate_h = 36
+        plate_x = (w - plate_w) // 2
+        plate_y = cy - plate_h // 2
+
+        plate_grad = QLinearGradient(plate_x, plate_y, plate_x, plate_y + plate_h)
+        plate_grad.setColorAt(0.0, QColor(58, 58, 63))
+        plate_grad.setColorAt(0.15, QColor(68, 68, 74))
+        plate_grad.setColorAt(0.85, QColor(52, 52, 57))
+        plate_grad.setColorAt(1.0, QColor(40, 40, 44))
+        painter.setBrush(QBrush(plate_grad))
+        painter.setPen(QPen(QColor(C_GROOVE), 1))
+        painter.drawRoundedRect(plate_x, plate_y, plate_w, plate_h, 4, 4)
+
+        # Inner bevel
+        painter.setPen(QPen(QColor(C_RIDGE), 0.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(plate_x + 2, plate_y + 2, plate_w - 4, plate_h - 4, 3, 3)
+
+        # Model text
+        from PyQt6.QtCore import QRectF
+        painter.setFont(QFont("Menlo", 9, QFont.Weight.Bold))
+        painter.setPen(QPen(QColor(C_GOLD), 1))
+        painter.drawText(
+            QRectF(plate_x, plate_y, plate_w, plate_h),
+            Qt.AlignmentFlag.AlignCenter,
+            "LONGPLAY  STUDIO  —  AI  MASTER  V5.0"
+        )
+
+        # Small decorative screws flanking the plate
+        for sx in [plate_x - 16, plate_x + plate_w + 6]:
+            screw_grad = QRadialGradient(sx + 5, cy, 5)
+            screw_grad.setColorAt(0.0, QColor(90, 90, 95))
+            screw_grad.setColorAt(1.0, QColor(40, 40, 44))
+            painter.setBrush(QBrush(screw_grad))
+            painter.setPen(QPen(QColor(30, 30, 32), 1))
+            painter.drawEllipse(sx, cy - 5, 10, 10)
+            # Cross
+            painter.setPen(QPen(QColor(45, 45, 48), 1))
+            painter.drawLine(sx + 3, cy, sx + 7, cy)
+            painter.drawLine(sx + 5, cy - 2, sx + 5, cy + 2)
+
+        # LED dots on both sides
+        for side in [0, 1]:
+            base_x = 36 if side == 0 else w - 66
+            for j in range(3):
+                lx = base_x + j * 10
+                led_c = QColor(C_LED_GREEN) if j < 2 else QColor(C_LED_YELLOW)
+                painter.setBrush(QBrush(led_c))
+                painter.setPen(QPen(QColor(C_GROOVE), 1))
+                painter.drawEllipse(lx, cy - 2, 5, 5)
+
+
+# ══════════════════════════════════════════════════
+#  Ozone 12 / Logic Pro Level Meter Widget
+# ══════════════════════════════════════════════════
+class OzoneLevelMeter(QWidget):
+    """
+    V5.5 SSL/Neve Vintage Dual L/R Level Meter.
+    Warm amber VU-style segments with peak hold — inspired by SSL 4000/Neve 8816.
+    Bigger, bolder, easier to read on dark backgrounds.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(240, 200)
+        self.l_peak = -60.0
+        self.r_peak = -60.0
+        self.l_rms = -60.0
+        self.r_rms = -60.0
+        self.l_peak_hold = -60.0
+        self.r_peak_hold = -60.0
+        self._db_labels = [0, -3, -6, -12, -24, -48]
+
+    def set_levels(self, l_peak=-60.0, r_peak=-60.0, l_rms=-60.0, r_rms=-60.0):
+        self.l_rms = max(-60.0, min(3.0, l_rms))
+        self.r_rms = max(-60.0, min(3.0, r_rms))
+        self.l_peak = max(-60.0, min(3.0, l_peak))
+        self.r_peak = max(-60.0, min(3.0, r_peak))
+        if self.l_peak > self.l_peak_hold:
+            self.l_peak_hold = self.l_peak
+        if self.r_peak > self.r_peak_hold:
+            self.r_peak_hold = self.r_peak
+        self.update()
+
+    def reset(self):
+        self.l_peak = self.r_peak = -60.0
+        self.l_rms = self.r_rms = -60.0
+        self.l_peak_hold = self.r_peak_hold = -60.0
+        self.update()
+
+    def _db_to_ratio(self, db):
+        db = max(-60.0, min(3.0, db))
+        return (db + 60.0) / 63.0
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        w, h = self.width(), self.height()
+
+        # ── Vintage recessed panel background ──
+        p.fillRect(0, 0, w, h, QColor("#0A0A0C"))
+        # Inner bevel
+        p.setPen(QPen(QColor("#1A1A1E"), 1))
+        p.drawRect(1, 1, w - 3, h - 3)
+
+        # ── Layout: dB scale | L bar | gap | R bar | dB scale ──
+        bar_w = 32
+        gap = 8
+        scale_w = 28
+        total_bars = 2 * bar_w + gap
+        bar_start_x = (w - total_bars) // 2
+        l_x = bar_start_x
+        r_x = bar_start_x + bar_w + gap
+        top_y = 16
+        bar_h = h - 32
+
+        # ── dB scale (left side) ──
+        p.setFont(QFont("Menlo", 8))
+        for db_val in self._db_labels:
+            ratio = self._db_to_ratio(db_val)
+            y = top_y + int(bar_h * (1.0 - ratio))
+            # Label
+            p.setPen(QColor(C_CREAM_DIM))
+            p.drawText(l_x - scale_w - 2, y + 4, f"{db_val:>3}")
+            # Tick mark
+            p.setPen(QPen(QColor(C_RIDGE), 1))
+            p.drawLine(l_x - 4, y, l_x - 1, y)
+            # Right tick
+            p.drawLine(r_x + bar_w + 1, y, r_x + bar_w + 4, y)
+
+        # ── Draw bars ──
+        self._draw_bar(p, l_x, top_y, bar_w, bar_h,
+                        self.l_rms, self.l_peak, self.l_peak_hold)
+        self._draw_bar(p, r_x, top_y, bar_w, bar_h,
+                        self.r_rms, self.r_peak, self.r_peak_hold)
+
+        # ── L / R labels (SSL style — bold gold) ──
+        p.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        p.setPen(QColor(C_GOLD))
+        p.drawText(l_x + bar_w // 2 - 4, h - 2, "L")
+        p.drawText(r_x + bar_w // 2 - 4, h - 2, "R")
+
+        # ── Peak dB readout (above each bar) ──
+        p.setFont(QFont("Menlo", 9, QFont.Weight.Bold))
+        l_pk_txt = f"{self.l_peak:.1f}" if self.l_peak > -59.0 else "---"
+        r_pk_txt = f"{self.r_peak:.1f}" if self.r_peak > -59.0 else "---"
+        l_color = QColor(C_LED_RED) if self.l_peak > -1.0 else QColor(C_AMBER_GLOW)
+        r_color = QColor(C_LED_RED) if self.r_peak > -1.0 else QColor(C_AMBER_GLOW)
+        p.setPen(l_color)
+        lm = p.fontMetrics().boundingRect(l_pk_txt)
+        p.drawText(l_x + (bar_w - lm.width()) // 2, 12, l_pk_txt)
+        p.setPen(r_color)
+        rm = p.fontMetrics().boundingRect(r_pk_txt)
+        p.drawText(r_x + (bar_w - rm.width()) // 2, 12, r_pk_txt)
+
+        p.end()
+
+    def _draw_bar(self, p, x, y_top, w, h, rms_db, peak_db, peak_hold_db):
+        """Draw a single SSL-style segmented metering bar (warm amber palette)."""
+        seg_h = 3
+        seg_gap = 1
+        seg_step = seg_h + seg_gap
+        num_seg = h // seg_step
+
+        # SSL/Neve warm palette: green → amber → orange → red
+        col_green = QColor("#2ECC71")
+        col_amber = QColor(C_AMBER_GLOW)
+        col_orange = QColor("#F39C12")
+        col_red = QColor("#E74C3C")
+
+        col_green_dim = QColor("#0D3D1E")
+        col_amber_dim = QColor("#3D2E0A")
+        col_orange_dim = QColor("#3D2200")
+        col_red_dim = QColor("#3D0A0A")
+
+        # Bar background (recessed look)
+        p.fillRect(x, y_top, w, h, QColor("#08080A"))
+
+        for i in range(num_seg):
+            seg_y = y_top + h - (i + 1) * seg_step
+            seg_db = -60.0 + (i / max(1, num_seg - 1)) * 63.0
+
+            if seg_db > -1.0:
+                col_on, col_dim = col_red, col_red_dim
+            elif seg_db > -6.0:
+                col_on, col_dim = col_orange, col_orange_dim
+            elif seg_db > -12.0:
+                col_on, col_dim = col_amber, col_amber_dim
+            else:
+                col_on, col_dim = col_green, col_green_dim
+
+            if seg_db <= rms_db:
+                p.fillRect(x + 2, seg_y, w - 4, seg_h, col_on)
+                # Glow effect
+                glow = QColor(col_on)
+                glow.setAlpha(30)
+                p.fillRect(x + 1, seg_y - 1, w - 2, seg_h + 1, glow)
+            elif seg_db <= peak_db:
+                p.fillRect(x + 2, seg_y, w - 4, seg_h, col_dim)
+            else:
+                p.fillRect(x + 2, seg_y, w - 4, seg_h, QColor("#101012"))
+
+        # Peak hold line (bright amber for SSL feel)
+        if peak_hold_db > -59.0:
+            ratio = self._db_to_ratio(peak_hold_db)
+            y_hold = y_top + int(h * (1.0 - ratio))
+            hold_color = QColor(C_LED_RED) if peak_hold_db > -1.0 else QColor(C_AMBER_GLOW)
+            p.setPen(QPen(hold_color, 2))
+            p.drawLine(x + 1, y_hold, x + w - 2, y_hold)
+
+
+# ══════════════════════════════════════════════════
+#  Loudness Meter Bars — Logic Pro X / Ozone 12 Style
+# ══════════════════════════════════════════════════
+class LoudnessMeterBars(QWidget):
+    """
+    V5.5 Logic Pro X / Ozone 12 style LUFS Meter.
+
+    Features matching Logic Pro Loudness Meter:
+    - Range: +6 LUFS (top) to -60 LUFS (bottom) — supports positive values!
+    - 3 independent bars: M (Momentary), S (Short-term), I (Integrated)
+    - Color gradient: red (>0) → orange (-5→0) → yellow (-10→-5) → green (-36→-10) → blue (<-36)
+    - Large numeric readout above each bar
+    - Peak hold per bar with 2s decay
+    - Target line (dashed teal) at -14 LUFS
+    - LU Range + Integrated readout below bars
+    - dB scale on left: every 6 dB from +6 to -60
+    """
+
+    def __init__(self, parent=None, target_lufs=-14.0):
+        super().__init__(parent)
+        self.setFixedSize(240, 320)  # Tall like Logic Pro
+        self._mom = -70.0
+        self._short = -70.0
+        self._int = -70.0
+        self._target = target_lufs
+        self._lu_range = 0.0
+
+        # Range: +6 to -60 (like Logic Pro Loudness Meter)
+        self._min_db = -60.0
+        self._max_db = 6.0
+        self._labels = ["M", "S", "I"]
+
+        # Peak hold per bar (with 2s decay)
+        self._peak_hold = [-70.0, -70.0, -70.0]
+        self._peak_hold_time = [0.0, 0.0, 0.0]
+        self._peak_hold_decay = 2.0  # seconds
+
+    def set_levels(self, momentary=-70.0, short_term=-70.0, integrated=-70.0):
+        self._mom = max(self._min_db, min(self._max_db, momentary))
+        self._short = max(self._min_db, min(self._max_db, short_term))
+        self._int = max(self._min_db, min(self._max_db, integrated))
+
+        # Update peak hold
+        import time as _t
+        now = _t.time()
+        vals = [self._mom, self._short, self._int]
+        for i, v in enumerate(vals):
+            if v > self._peak_hold[i]:
+                self._peak_hold[i] = v
+                self._peak_hold_time[i] = now
+            elif now - self._peak_hold_time[i] > self._peak_hold_decay:
+                # Decay peak hold
+                self._peak_hold[i] = max(v, self._peak_hold[i] - 1.0)
+
+        self.update()
+
+    def set_target(self, target_lufs=-14.0):
+        self._target = target_lufs
+        self.update()
+
+    def set_lu_range(self, lu_range=0.0):
+        self._lu_range = lu_range
+        self.update()
+
+    def reset(self):
+        self._mom = -70.0
+        self._short = -70.0
+        self._int = -70.0
+        self._peak_hold = [-70.0, -70.0, -70.0]
+        self._lu_range = 0.0
+        self.update()
+
+    def _db_to_ratio(self, db):
+        """Map dB to 0.0-1.0 ratio within +6 to -60 range."""
+        if db <= self._min_db:
+            return 0.0
+        if db >= self._max_db:
+            return 1.0
+        return (db - self._min_db) / (self._max_db - self._min_db)
+
+    def _get_color(self, db):
+        """Logic Pro X color gradient: blue→green→yellow→orange→red."""
+        if db > 0.0:
+            return QColor("#E53935")       # Red — clipping zone
+        elif db > -5.0:
+            return QColor("#F39C12")       # Orange — very loud
+        elif db > -10.0:
+            return QColor("#FDD835")       # Yellow — loud
+        elif db > -18.0:
+            return QColor("#66BB6A")       # Green — normal
+        elif db > -36.0:
+            return QColor("#26A69A")       # Teal-green — moderate
+        else:
+            return QColor("#42A5F5")       # Blue — quiet
+
+    def _get_dim_color(self, db):
+        """Dimmed version for unlit segments."""
+        if db > 0.0:
+            return QColor("#3D0A0A")
+        elif db > -5.0:
+            return QColor("#3D2200")
+        elif db > -10.0:
+            return QColor("#3D3300")
+        elif db > -18.0:
+            return QColor("#0D3D1E")
+        elif db > -36.0:
+            return QColor("#0A2D2D")
+        else:
+            return QColor("#0A1A3D")
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        w, h = self.width(), self.height()
+
+        # ── Dark recessed panel background ──
+        p.fillRect(0, 0, w, h, QColor("#0A0A0C"))
+        p.setPen(QPen(QColor("#1A1A1E"), 1))
+        p.drawRect(1, 1, w - 3, h - 3)
+
+        # ── Title ──
+        p.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
+        p.setPen(QColor(C_CREAM_DIM))
+        p.drawText(0, 0, w, 16, Qt.AlignmentFlag.AlignCenter, "LUFS")
+
+        values = [self._mom, self._short, self._int]
+        labels = self._labels
+
+        # ── Layout ──
+        bar_w = 36
+        gap = 14
+        total_w = 3 * bar_w + 2 * gap
+        start_x = (w - total_w) // 2 + 12  # shift right for scale
+        num_readout_h = 20
+        top_y = 36
+        bar_h = h - 36 - num_readout_h - 52  # room for labels + LU readout
+        bottom_y = top_y + bar_h
+
+        # ── dB scale (left side — every 6 dB from +6 to -60) ──
+        p.setFont(QFont("Menlo", 7))
+        scale_ticks = [6, 3, 0, -3, -6, -12, -18, -24, -30, -36, -42, -48, -54, -60]
+        for db_val in scale_ticks:
+            ratio = self._db_to_ratio(db_val)
+            y = top_y + int(bar_h * (1.0 - ratio))
+            if y < top_y or y > bottom_y:
+                continue
+            # Label
+            if db_val == int(self._target):
+                p.setPen(QColor(C_TEAL_GLOW))
+            elif db_val == 0:
+                p.setPen(QColor(C_CREAM))
+            else:
+                p.setPen(QColor(C_CREAM_DIM))
+            p.drawText(2, y + 3, f"{db_val:>3}")
+            # Tick
+            p.setPen(QPen(QColor(C_RIDGE), 1))
+            p.drawLine(start_x - 4, y, start_x - 1, y)
+
+        # ── Draw each bar ──
+        num_segs = 50  # More segments for smoother appearance
+        seg_h = max(1, bar_h // num_segs)
+
+        for i, (val, label) in enumerate(zip(values, labels)):
+            x = start_x + i * (bar_w + gap)
+
+            # ── Numeric readout above bar ──
+            p.setFont(QFont("Menlo", 11, QFont.Weight.Bold))
+            if val > -69.0:
+                val_color = self._get_color(val)
+                val_text = f"{val:.1f}"
+            else:
+                val_color = QColor(C_CREAM_DIM)
+                val_text = "--.-"
+            p.setPen(val_color)
+            tm = p.fontMetrics().boundingRect(val_text)
+            p.drawText(x + (bar_w - tm.width()) // 2, top_y - 4, val_text)
+
+            # ── Bar background (recessed) ──
+            p.fillRect(x, top_y, bar_w, bar_h, QColor("#08080A"))
+
+            # ── Segmented filled bar ──
+            ratio = self._db_to_ratio(val)
+            filled_segs = int(ratio * num_segs)
+
+            for s in range(num_segs):
+                seg_y = top_y + bar_h - (s + 1) * seg_h
+                if seg_y < top_y:
+                    break
+                seg_db = self._min_db + (s / num_segs) * (self._max_db - self._min_db)
+
+                if s < filled_segs:
+                    color = self._get_color(seg_db)
+                    p.fillRect(x + 2, seg_y + 1, bar_w - 4, seg_h - 1, color)
+                    # Subtle glow
+                    glow = QColor(color)
+                    glow.setAlpha(20)
+                    p.fillRect(x + 1, seg_y, bar_w - 2, seg_h, glow)
+                else:
+                    p.fillRect(x + 2, seg_y + 1, bar_w - 4, seg_h - 1, QColor("#101012"))
+
+            # ── Peak hold line ──
+            pk = self._peak_hold[i]
+            if pk > -69.0:
+                pk_ratio = self._db_to_ratio(pk)
+                pk_y = top_y + int(bar_h * (1.0 - pk_ratio))
+                if top_y <= pk_y <= bottom_y:
+                    pk_color = self._get_color(pk)
+                    p.setPen(QPen(pk_color, 2))
+                    p.drawLine(x + 1, pk_y, x + bar_w - 2, pk_y)
+
+            # ── Label below bar ──
+            p.setFont(QFont("Menlo", 9, QFont.Weight.Bold))
+            p.setPen(QColor(C_GOLD))
+            lm = p.fontMetrics().boundingRect(label)
+            p.drawText(x + (bar_w - lm.width()) // 2, bottom_y + 14, label)
+
+        # ── Target line (dashed teal, spans all bars) ──
+        target_ratio = self._db_to_ratio(self._target)
+        if 0.0 < target_ratio < 1.0:
+            target_y = top_y + int(bar_h * (1.0 - target_ratio))
+            pen = QPen(QColor(C_TEAL_GLOW), 1, Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.drawLine(start_x - 2, target_y,
+                       start_x + total_w + 2, target_y)
+            # Target label (right side)
+            p.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
+            p.setPen(QColor(C_TEAL_GLOW))
+            p.drawText(start_x + total_w + 4, target_y + 3,
+                       f"{self._target:.0f}")
+
+        # ── LU Range + Integrated readout (below bars, like Logic Pro) ──
+        readout_y = bottom_y + 22
+        p.setFont(QFont("Menlo", 9))
+
+        # LU Range
+        p.setPen(QColor(C_CREAM_DIM))
+        p.drawText(start_x - 8, readout_y, "LU Range")
+        p.setFont(QFont("Menlo", 11, QFont.Weight.Bold))
+        p.setPen(QColor(C_AMBER_GLOW))
+        lu_text = f"{self._lu_range:.1f}" if self._lu_range > 0.01 else "---"
+        p.drawText(start_x - 8, readout_y + 16, lu_text)
+
+        # Integrated
+        int_x = start_x + bar_w + gap + 10
+        p.setFont(QFont("Menlo", 9))
+        p.setPen(QColor(C_CREAM_DIM))
+        p.drawText(int_x, readout_y, "Integrated")
+        p.setFont(QFont("Menlo", 11, QFont.Weight.Bold))
+        int_val = self._int
+        if int_val > -69.0:
+            p.setPen(QColor(C_TEAL_GLOW))
+            int_text = f"{int_val:.1f}"
+        else:
+            p.setPen(QColor(C_CREAM_DIM))
+            int_text = "---"
+        p.drawText(int_x, readout_y + 16, int_text)
+
+        p.end()
+
+
+# ══════════════════════════════════════════════════
+#  Background Worker Thread
+# ══════════════════════════════════════════════════
+class MasterWorker(QThread):
+    """Background thread for mastering operations."""
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, chain: MasterChain, mode: str = "render",
+                 genre: str = "", platform: str = "", intensity: int = 50):
+        super().__init__()
+        self.chain = chain
+        self.mode = mode
+        self.preview_start = 0
+        self.preview_duration = 30
+        # V5.0 FIX: Store analyze params to prevent AttributeError
+        self._genre = genre
+        self._platform = platform
+        self._intensity = intensity
+
+    def run(self):
+        try:
+            if self.mode == "preview":
+                result = self.chain.preview(
+                    start_sec=self.preview_start,
+                    duration_sec=self.preview_duration,
+                    callback=self._callback,
+                )
+                self.finished.emit(result) if result else self.error.emit("Preview failed")
+
+            elif self.mode == "render":
+                result = self.chain.render(callback=self._callback)
+                self.finished.emit(result) if result else self.error.emit("Render failed")
+
+            elif self.mode == "analyze":
+                rec = self.chain.ai_recommend(
+                    genre=self._genre,
+                    platform=self._platform,
+                    intensity=self._intensity,
+                )
+                self.finished.emit("analysis_done") if rec else self.error.emit("Analysis failed")
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _callback(self, percent, status):
+        self.progress.emit(percent, status)
+
+
+# ══════════════════════════════════════════════════
+#  VU-Style Meters Panel (Right Side)
+# ══════════════════════════════════════════════════
+class MetersPanel(QFrame):
+    """
+    V5.4 UX Redesign: Dual-mode Live Metering Panel.
+
+    Replaces the old static INPUT/OUTPUT panel with:
+    - LIVE mode: Animated L/R bars + True Peak + LUFS + GR meter + Stage indicator
+    - RESULT mode: Before/After comparison + TP accuracy + Gain delta
+
+    Uses QStackedWidget to switch between modes.
+    Backward compatible: update_input(), update_output(), set_status() still work.
+    """
+
+    MODE_LIVE = 0
+    MODE_RESULT = 1
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(280)
+        self.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 {C_GROOVE}, stop:0.02 {C_PANEL_INSET},
+                    stop:0.98 {C_PANEL_INSET}, stop:1 {C_GROOVE});
+                border-left: 1px solid {C_GROOVE};
+            }}
+        """)
+
+        # Store Before/After data for RESULT mode
+        self._input_data = {"lufs": None, "tp": None, "lra": None}
+        self._output_data = {"lufs": None, "tp": None, "lra": None}
+        self._target_tp = -1.0
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(14, 14, 14, 14)
+        root_layout.setSpacing(6)
+
+        # --- Mode header ---
+        self.mode_header = QLabel("⚡ REAL-TIME METERING")
+        self.mode_header.setStyleSheet(
+            f"font-size:10px; color:{C_TEAL_GLOW}; letter-spacing:2px; font-weight:bold;")
+        self.mode_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root_layout.addWidget(self.mode_header)
+
+        # --- Stacked Widget: LIVE / RESULT ---
+        self.stack = QStackedWidget()
+        root_layout.addWidget(self.stack, stretch=1)
+
+        # === PAGE 0: LIVE MODE ===
+        self._build_live_page()
+
+        # === PAGE 1: RESULT MODE ===
+        self._build_result_page()
+
+        self.stack.setCurrentIndex(self.MODE_LIVE)
+
+        # --- Target Indicator (always visible) ---
+        root_layout.addWidget(self._groove_divider())
+        self.target_frame = QFrame()
+        self.target_frame.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {C_PANEL_INSET}, stop:0.5 #1E1E20, stop:1 {C_PANEL_INSET});
+                border: 1px solid {C_GROOVE};
+                border-top: 1px solid {C_RIDGE};
+                border-radius: 4px;
+                padding: 6px;
+            }}
+        """)
+        tf_layout = QVBoxLayout(self.target_frame)
+        tf_layout.setContentsMargins(6, 4, 6, 4)
+        tf_layout.setSpacing(2)
+        target_lbl = QLabel("TARGET")
+        target_lbl.setStyleSheet(f"font-size:8px; color:{C_GOLD}; letter-spacing:2px; background:transparent;")
+        target_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tf_layout.addWidget(target_lbl)
+        self.target_val = QLabel("-14.0 LUFS")
+        self.target_val.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
+        self.target_val.setStyleSheet(f"color: {C_TEAL_GLOW}; background:transparent;")
+        self.target_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tf_layout.addWidget(self.target_val)
+        self.target_platform = QLabel("YouTube")
+        self.target_platform.setStyleSheet(f"font-size:9px; color:{C_CREAM_DIM}; background:transparent;")
+        self.target_platform.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tf_layout.addWidget(self.target_platform)
+        root_layout.addWidget(self.target_frame)
+
+        # --- Status LED (always visible) ---
+        self.status_row = self._info_row("STATUS", "READY")
+        root_layout.addLayout(self.status_row[0])
+
+    # ─── LIVE PAGE ────────────────────────────
+    def _build_live_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        # L/R Level Meter (reuse OzoneLevelMeter)
+        self.live_ozone_meter = OzoneLevelMeter()
+        layout.addWidget(self.live_ozone_meter, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(self._groove_divider())
+
+        # ── TRUE PEAK (V5.5 — large vintage readout) ──
+        self._add_section_header(layout, "TRUE  PEAK")
+        tp_frame = QFrame()
+        tp_frame.setStyleSheet(f"""
+            QFrame {{
+                background: #0A0A0C;
+                border: 1px solid {C_GROOVE};
+                border-radius: 4px;
+                padding: 4px;
+            }}
+        """)
+        tp_inner = QHBoxLayout(tp_frame)
+        tp_inner.setContentsMargins(8, 2, 8, 2)
+        tp_inner.setSpacing(4)
+        self.live_tp = QLabel("--.- dBTP")
+        self.live_tp.setFont(QFont("Menlo", 22, QFont.Weight.Bold))
+        self.live_tp.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.live_tp.setStyleSheet(f"color: {C_LED_GREEN}; background: transparent;")
+        tp_inner.addWidget(self.live_tp)
+        # Over LED indicator
+        self.live_tp_led = QLabel("●")
+        self.live_tp_led.setFont(QFont("Menlo", 16))
+        self.live_tp_led.setStyleSheet(f"color: {C_GROOVE}; background: transparent;")
+        self.live_tp_led.setFixedWidth(20)
+        tp_inner.addWidget(self.live_tp_led)
+        layout.addWidget(tp_frame)
+
+        layout.addWidget(self._groove_divider())
+
+        # ── LOUDNESS BARS (V5.5 — SSL/Neve vintage, wider) ──
+        self._add_section_header(layout, "LOUDNESS  (LUFS)")
+        self.live_lufs_bars = LoudnessMeterBars(target_lufs=-14.0)
+        layout.addWidget(self.live_lufs_bars, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Backward-compat: hidden text labels
+        self.live_lufs_mom = QLabel("--.-")
+        self.live_lufs_mom.setVisible(False)
+        self.live_lufs_short = QLabel("--.-")
+        self.live_lufs_short.setVisible(False)
+        self.live_lufs_int = QLabel("--.-")
+        self.live_lufs_int.setVisible(False)
+
+        layout.addWidget(self._groove_divider())
+
+        # ── GAIN REDUCTION (V5.5 — wide amber bar + large readout) ──
+        self._add_section_header(layout, "GAIN  REDUCTION")
+        self.live_gr_bar = QProgressBar()
+        self.live_gr_bar.setRange(0, 100)
+        self.live_gr_bar.setValue(0)
+        self.live_gr_bar.setFixedHeight(14)
+        self.live_gr_bar.setTextVisible(False)
+        self.live_gr_bar.setStyleSheet(f"""
+            QProgressBar {{
+                background: #08080A;
+                border: 1px solid {C_GROOVE};
+                border-radius: 3px;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 {C_AMBER}, stop:0.7 {C_AMBER_GLOW}, stop:1 {C_LED_RED});
+                border-radius: 2px;
+            }}
+        """)
+        layout.addWidget(self.live_gr_bar)
+        self.live_gr_val = QLabel("0.0 dB")
+        self.live_gr_val.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
+        self.live_gr_val.setStyleSheet(f"color:{C_AMBER_GLOW};")
+        self.live_gr_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.live_gr_val)
+
+        # ── STAGE indicator (V5.5 — larger, more prominent) ──
+        self.live_stage = QLabel("STAGE: IDLE")
+        self.live_stage.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        self.live_stage.setStyleSheet(
+            f"color:{C_TEAL_GLOW}; letter-spacing:2px;")
+        self.live_stage.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.live_stage)
+
+        layout.addStretch()
+        self.stack.addWidget(page)
+
+    # ─── RESULT PAGE ──────────────────────────
+    def _build_result_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        # Header
+        result_hdr = QLabel("BEFORE  →  AFTER")
+        result_hdr.setStyleSheet(f"font-size:10px; color:{C_GOLD}; letter-spacing:2px; font-weight:bold;")
+        result_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(result_hdr)
+
+        layout.addWidget(self._groove_divider())
+
+        # LUFS comparison
+        self._add_section_header(layout, "INTEGRATED LUFS")
+        lufs_row = QHBoxLayout()
+        self.result_lufs_in = QLabel("--.-")
+        self.result_lufs_in.setFont(QFont("Menlo", 16, QFont.Weight.Bold))
+        self.result_lufs_in.setStyleSheet(f"color: {C_CREAM_DIM};")
+        self.result_lufs_in.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lufs_row.addWidget(self.result_lufs_in)
+        arrow = QLabel("→")
+        arrow.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
+        arrow.setStyleSheet(f"color: {C_GOLD};")
+        arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lufs_row.addWidget(arrow)
+        self.result_lufs_out = QLabel("--.-")
+        self.result_lufs_out.setFont(QFont("Menlo", 16, QFont.Weight.Bold))
+        self.result_lufs_out.setStyleSheet(f"color: {C_AMBER_GLOW};")
+        self.result_lufs_out.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lufs_row.addWidget(self.result_lufs_out)
+        layout.addLayout(lufs_row)
+
+        layout.addWidget(self._groove_divider())
+
+        # True Peak comparison
+        self._add_section_header(layout, "TRUE PEAK")
+        tp_row = QHBoxLayout()
+        self.result_tp_in = QLabel("--.-")
+        self.result_tp_in.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
+        self.result_tp_in.setStyleSheet(f"color: {C_CREAM_DIM};")
+        self.result_tp_in.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tp_row.addWidget(self.result_tp_in)
+        arrow2 = QLabel("→")
+        arrow2.setFont(QFont("Menlo", 12, QFont.Weight.Bold))
+        arrow2.setStyleSheet(f"color: {C_GOLD};")
+        arrow2.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tp_row.addWidget(arrow2)
+        self.result_tp_out = QLabel("--.-")
+        self.result_tp_out.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
+        self.result_tp_out.setStyleSheet(f"color: {C_LED_GREEN};")
+        self.result_tp_out.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tp_row.addWidget(self.result_tp_out)
+        layout.addLayout(tp_row)
+
+        # TP Accuracy indicator
+        self.result_tp_accuracy = QLabel("")
+        self.result_tp_accuracy.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        self.result_tp_accuracy.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.result_tp_accuracy)
+
+        layout.addWidget(self._groove_divider())
+
+        # LRA + Gain delta
+        self.lra_row = self._info_row("LRA", "-- LU")
+        layout.addLayout(self.lra_row[0])
+        self.short_term_row = self._info_row("SHORT", "-- LUFS")
+        layout.addLayout(self.short_term_row[0])
+        self.gain_row = self._info_row("GAIN \u0394", "--")
+        layout.addLayout(self.gain_row[0])
+
+        layout.addStretch()
+        self.stack.addWidget(page)
+
+    # ─── Public API (backward compatible) ─────
+
+    def show_live_mode(self):
+        """Switch to LIVE metering mode (during processing)."""
+        self.stack.setCurrentIndex(self.MODE_LIVE)
+        self.mode_header.setText("⚡ REAL-TIME METERING")
+        self.mode_header.setStyleSheet(
+            f"font-size:10px; color:{C_TEAL_GLOW}; letter-spacing:2px; font-weight:bold;")
+
+    def show_result_mode(self):
+        """Switch to RESULT mode (after processing complete)."""
+        self.stack.setCurrentIndex(self.MODE_RESULT)
+        self.mode_header.setText("✅ MASTERING RESULT")
+        self.mode_header.setStyleSheet(
+            f"font-size:10px; color:{C_LED_GREEN}; letter-spacing:2px; font-weight:bold;")
+        # Populate Before/After
+        if self._input_data["lufs"] is not None:
+            self.result_lufs_in.setText(f"{self._input_data['lufs']:.1f}")
+            self.result_tp_in.setText(f"{self._input_data['tp']:.1f}")
+        if self._output_data["lufs"] is not None:
+            self.result_lufs_out.setText(f"{self._output_data['lufs']:.1f}")
+            self.result_tp_out.setText(f"{self._output_data['tp']:.1f}")
+            self._set_result_tp_color(self._output_data['tp'])
+            self._show_tp_accuracy(self._output_data['tp'])
+
+    def update_live_levels(self, levels: dict):
+        """Update live meter from chain meter callback data."""
+        self.live_ozone_meter.set_levels(
+            l_peak=levels.get("left_peak_db", -60.0),
+            r_peak=levels.get("right_peak_db", -60.0),
+            l_rms=levels.get("left_rms_db", -60.0),
+            r_rms=levels.get("right_rms_db", -60.0),
+        )
+        # Update True Peak + over LED
+        tp = max(levels.get("left_peak_db", -60.0), levels.get("right_peak_db", -60.0))
+        self.live_tp.setText(f"{tp:.1f} dBTP")
+        if tp > -1.0:
+            self.live_tp.setStyleSheet(f"color: {C_LED_RED}; background: transparent;")
+            self.live_tp_led.setStyleSheet(f"color: {C_LED_RED}; background: transparent;")
+        elif tp > -3.0:
+            self.live_tp.setStyleSheet(f"color: {C_LED_YELLOW}; background: transparent;")
+            self.live_tp_led.setStyleSheet(f"color: {C_LED_YELLOW}; background: transparent;")
+        else:
+            self.live_tp.setStyleSheet(f"color: {C_LED_GREEN}; background: transparent;")
+            self.live_tp_led.setStyleSheet(f"color: {C_GROOVE}; background: transparent;")
+
+        # LUFS values — drive LED bars + keep hidden text labels updated
+        lufs_m = levels.get("lufs_momentary", -70.0)
+        lufs_s = levels.get("lufs_short_term", -70.0)
+        lufs_i = levels.get("lufs_integrated", -70.0)
+        lu_range = levels.get("lu_range", 0.0)
+        self.live_lufs_bars.set_levels(lufs_m, lufs_s, lufs_i)
+        self.live_lufs_bars.set_lu_range(lu_range)
+        self.live_lufs_mom.setText(f"{lufs_m:.1f}")
+        self.live_lufs_short.setText(f"{lufs_s:.1f}")
+        self.live_lufs_int.setText(f"{lufs_i:.1f}")
+
+        # Gain reduction
+        gr = levels.get("gain_reduction_db", 0.0)
+        self.live_gr_val.setText(f"{gr:.1f} dB")
+        gr_pct = min(100, int(abs(gr) / 12.0 * 100))
+        self.live_gr_bar.setValue(gr_pct)
+
+        # Stage
+        stage = levels.get("stage", "")
+        stage_names = {
+            "post_eq": "EQ", "post_dynamics": "DYNAMICS", "post_imager": "IMAGER",
+            "post_maximizer": "MAXIMIZER", "post_loudnorm": "LOUDNESS", "final": "FINAL",
+            "realtime": "REAL-TIME DSP", "realtime_lufs": "REAL-TIME DSP",
+            "playback": "PLAYBACK",
+        }
+        if stage in stage_names:
+            self.live_stage.setText(f"STAGE: ⚡ {stage_names[stage]}")
+
+    def update_input(self, lufs, tp, lra):
+        """Store input analysis data (backward compatible)."""
+        self._input_data = {"lufs": lufs, "tp": tp, "lra": lra}
+        self.lra_row[1].setText(f"{lra:.1f} LU")
+
+    def update_output(self, lufs, tp, lra):
+        """Store output analysis data and switch to RESULT mode (backward compatible)."""
+        self._output_data = {"lufs": lufs, "tp": tp, "lra": lra}
+        self.lra_row[1].setText(f"{lra:.1f} LU")
+        # Calculate and show gain delta
+        if self._input_data["lufs"] is not None:
+            delta = lufs - self._input_data["lufs"]
+            sign = "+" if delta >= 0 else ""
+            self.gain_row[1].setText(f"{sign}{delta:.1f} dB")
+        # Switch to RESULT mode
+        self.show_result_mode()
+
+    def update_target(self, lufs, tp, platform):
+        self.target_val.setText(f"{lufs:.1f} LUFS")
+        self.target_platform.setText(platform)
+        self._target_tp = tp
+
+    def set_status(self, text, color=None):
+        self.status_row[1].setText(text)
+        if color:
+            self.status_row[1].setStyleSheet(
+                f"color:{color}; font-family:'Menlo',monospace; font-weight:bold;")
+
+    # ─── Internal helpers ─────────────────────
+
+    def _show_tp_accuracy(self, tp):
+        """Show True Peak accuracy indicator."""
+        error = abs(tp - self._target_tp)
+        if error <= 0.3:
+            self.result_tp_accuracy.setText(f"✅ TP: {tp:.1f} dBTP (error: {error:.1f} dB)")
+            self.result_tp_accuracy.setStyleSheet(f"color: {C_LED_GREEN}; font-size: 9px;")
+        elif error <= 1.0:
+            self.result_tp_accuracy.setText(f"⚠️ TP: {tp:.1f} dBTP (error: {error:.1f} dB)")
+            self.result_tp_accuracy.setStyleSheet(f"color: {C_LED_YELLOW}; font-size: 9px;")
+        else:
+            self.result_tp_accuracy.setText(f"❌ TP: {tp:.1f} dBTP (error: {error:.1f} dB)")
+            self.result_tp_accuracy.setStyleSheet(f"color: {C_LED_RED}; font-size: 9px;")
+
+    def _set_result_tp_color(self, tp):
+        if tp > -1.0:
+            self.result_tp_out.setStyleSheet(f"color: {C_LED_RED};")
+        elif tp > -3.0:
+            self.result_tp_out.setStyleSheet(f"color: {C_LED_YELLOW};")
+        else:
+            self.result_tp_out.setStyleSheet(f"color: {C_LED_GREEN};")
+
+    def _add_section_header(self, layout, text):
+        lbl = QLabel(text)
+        lbl.setStyleSheet(
+            f"font-size:8px; color:{C_GOLD}; letter-spacing:2px; font-weight:bold;")
+        layout.addWidget(lbl)
+
+    def _groove_divider(self):
+        line = QFrame()
+        line.setFixedHeight(2)
+        line.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {C_GROOVE}, stop:1 {C_RIDGE});
+            }}
+        """)
+        return line
+
+    def _info_row(self, label, value):
+        row = QHBoxLayout()
+        lbl = QLabel(label)
+        lbl.setStyleSheet(f"font-size:10px; color:{C_GOLD}; letter-spacing:1px;")
+        val = QLabel(value)
+        val.setStyleSheet(
+            f"font-family:'Menlo',monospace; font-weight:bold; font-size:11px; color:{C_AMBER_GLOW};")
+        val.setAlignment(Qt.AlignmentFlag.AlignRight)
+        row.addWidget(lbl)
+        row.addWidget(val)
+        return (row, val)
+
+
+# ══════════════════════════════════════════════════
+#  Preview Transport Bar — Logic Pro X-style
+# ══════════════════════════════════════════════════
+class PreviewTransportBar(QFrame):
+    """Playback transport with play/pause, seek slider, time display, and bypass toggle."""
+
+    play_clicked = pyqtSignal()
+    pause_clicked = pyqtSignal()
+    stop_clicked = pyqtSignal()
+    seek_requested = pyqtSignal(int)   # position_ms
+    bypass_toggled = pyqtSignal(bool)  # is_bypassed
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._is_playing = False
+        self._is_bypassed = False
+        self._duration_ms = 0
+        self._slider_pressed = False
+
+        self.setFixedHeight(52)
+        self.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {C_GROOVE}, stop:0.05 {C_PANEL_INSET},
+                    stop:0.95 {C_PANEL_INSET}, stop:1 {C_GROOVE});
+                border-top: 1px solid {C_RIDGE};
+                border-bottom: 1px solid {C_GROOVE};
+            }}
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 4, 16, 4)
+        layout.setSpacing(10)
+
+        # ── PLAY / PAUSE button ──
+        self.btn_play = QPushButton("▶  PLAY")
+        self.btn_play.setFixedSize(90, 36)
+        self.btn_play.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_play.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #3A3A42, stop:1 #28282E);
+                color: {C_AMBER_GLOW};
+                font-family: 'Menlo', 'Courier New';
+                font-size: 11px;
+                font-weight: bold;
+                border: 1px solid {C_RIDGE};
+                border-radius: 4px;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #4A4A52, stop:1 #38383E);
+                color: {C_AMBER_GLOW};
+            }}
+            QPushButton:pressed {{
+                background: {C_PANEL_INSET};
+            }}
+        """)
+        self.btn_play.clicked.connect(self._on_play_clicked)
+        layout.addWidget(self.btn_play)
+
+        # ── STOP button ──
+        self.btn_stop = QPushButton("■")
+        self.btn_stop.setFixedSize(36, 36)
+        self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #3A3A42, stop:1 #28282E);
+                color: {C_CREAM_DIM};
+                font-size: 14px;
+                font-weight: bold;
+                border: 1px solid {C_RIDGE};
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{ background: #4A4A52; color: {C_CREAM}; }}
+        """)
+        self.btn_stop.clicked.connect(self.stop_clicked.emit)
+        layout.addWidget(self.btn_stop)
+
+        # ── Time current ──
+        self.time_current = QLabel("0:00")
+        self.time_current.setFixedWidth(42)
+        self.time_current.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.time_current.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        self.time_current.setStyleSheet(f"color: {C_AMBER_GLOW}; background: transparent;")
+        layout.addWidget(self.time_current)
+
+        # ── Seek Slider ──
+        self.seek_slider = QSlider(Qt.Orientation.Horizontal)
+        self.seek_slider.setRange(0, 10000)
+        self.seek_slider.setValue(0)
+        self.seek_slider.setFixedHeight(22)
+        self.seek_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                height: 6px;
+                background: {C_PANEL_INSET};
+                border: 1px solid {C_GROOVE};
+                border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 {C_AMBER_DIM}, stop:1 {C_AMBER});
+                border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                width: 14px;
+                height: 14px;
+                margin: -5px 0;
+                background: qradialgradient(cx:0.5,cy:0.5,r:0.5,
+                    stop:0 {C_AMBER_GLOW}, stop:0.7 {C_AMBER}, stop:1 {C_AMBER_DIM});
+                border: 1px solid {C_GROOVE};
+                border-radius: 7px;
+            }}
+            QSlider::handle:horizontal:hover {{
+                background: qradialgradient(cx:0.5,cy:0.5,r:0.5,
+                    stop:0 #FFF, stop:0.5 {C_AMBER_GLOW}, stop:1 {C_AMBER});
+            }}
+        """)
+        self.seek_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.seek_slider.sliderReleased.connect(self._on_slider_released)
+        self.seek_slider.sliderMoved.connect(self._on_slider_moved)
+        layout.addWidget(self.seek_slider, stretch=1)
+
+        # ── Time duration ──
+        self.time_duration = QLabel("0:00")
+        self.time_duration.setFixedWidth(42)
+        self.time_duration.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.time_duration.setFont(QFont("Menlo", 10))
+        self.time_duration.setStyleSheet(f"color: {C_CREAM_DIM}; background: transparent;")
+        layout.addWidget(self.time_duration)
+
+        # ── Separator ──
+        sep = QFrame()
+        sep.setFixedWidth(1)
+        sep.setFixedHeight(30)
+        sep.setStyleSheet(f"background: {C_RIDGE};")
+        layout.addWidget(sep)
+
+        # ── BYPASS toggle ──
+        self.btn_bypass = QPushButton("● MASTERED")
+        self.btn_bypass.setFixedSize(120, 36)
+        self.btn_bypass.setCheckable(True)
+        self.btn_bypass.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_bypass_style(False)
+        self.btn_bypass.toggled.connect(self._on_bypass_toggled)
+        layout.addWidget(self.btn_bypass)
+
+    def _on_play_clicked(self):
+        if self._is_playing:
+            self._is_playing = False
+            self.btn_play.setText("▶  PLAY")
+            self.pause_clicked.emit()
+        else:
+            self._is_playing = True
+            self.btn_play.setText("⏸  PAUSE")
+            self.play_clicked.emit()
+
+    def _on_slider_pressed(self):
+        self._slider_pressed = True
+
+    def _on_slider_released(self):
+        self._slider_pressed = False
+        if self._duration_ms > 0:
+            pos_ms = int(self.seek_slider.value() / 10000.0 * self._duration_ms)
+            self.seek_requested.emit(pos_ms)
+
+    def _on_slider_moved(self, value):
+        if self._duration_ms > 0:
+            pos_ms = int(value / 10000.0 * self._duration_ms)
+            self.time_current.setText(self._format_time(pos_ms))
+
+    def _on_bypass_toggled(self, checked):
+        self._is_bypassed = checked
+        self._update_bypass_style(checked)
+        self.bypass_toggled.emit(checked)
+
+    def _update_bypass_style(self, bypassed):
+        if bypassed:
+            self.btn_bypass.setText("● ORIGINAL")
+            self.btn_bypass.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                        stop:0 #4A3A1A, stop:1 #3A2A10);
+                    color: {C_AMBER_GLOW};
+                    font-family: 'Menlo', 'Courier New';
+                    font-size: 10px;
+                    font-weight: bold;
+                    border: 2px solid {C_AMBER};
+                    border-radius: 4px;
+                    letter-spacing: 1px;
+                }}
+            """)
+        else:
+            self.btn_bypass.setText("● MASTERED")
+            self.btn_bypass.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                        stop:0 #1A3A1A, stop:1 #102A10);
+                    color: {C_LED_GREEN};
+                    font-family: 'Menlo', 'Courier New';
+                    font-size: 10px;
+                    font-weight: bold;
+                    border: 2px solid {C_LED_GREEN};
+                    border-radius: 4px;
+                    letter-spacing: 1px;
+                }}
+            """)
+
+    def update_position(self, position_ms):
+        """Update slider and time display from player position."""
+        if not self._slider_pressed and self._duration_ms > 0:
+            self.seek_slider.setValue(int(position_ms / self._duration_ms * 10000))
+        self.time_current.setText(self._format_time(position_ms))
+
+    def update_duration(self, duration_ms):
+        """Set total duration."""
+        self._duration_ms = duration_ms
+        self.time_duration.setText(self._format_time(duration_ms))
+
+    def set_stopped(self):
+        """Reset to stopped state."""
+        self._is_playing = False
+        self.btn_play.setText("▶  PLAY")
+        self.seek_slider.setValue(0)
+        self.time_current.setText("0:00")
+
+    def set_disabled_state(self):
+        """V5.5: Show transport in disabled/dimmed state (no audio loaded yet)."""
+        self.btn_play.setEnabled(False)
+        self.btn_play.setText("▶  LOAD AUDIO TO PLAY")
+        self.btn_play.setStyleSheet(f"""
+            QPushButton {{
+                background: {C_PANEL_INSET};
+                color: {C_CREAM_DIM};
+                font-family: 'Menlo', 'Courier New';
+                font-size: 10px; font-weight: bold;
+                border: 1px solid {C_GROOVE};
+                border-radius: 4px; letter-spacing: 1px;
+            }}
+        """)
+        self.btn_stop.setEnabled(False)
+        self.seek_slider.setEnabled(False)
+        self.btn_bypass.setEnabled(False)
+
+    def set_enabled_state(self):
+        """V5.5: Enable transport (audio loaded, ready for RT playback)."""
+        self.btn_play.setEnabled(True)
+        self.btn_play.setText("▶  PLAY")
+        self.btn_play.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #3A3A42, stop:1 #28282E);
+                color: {C_AMBER_GLOW};
+                font-family: 'Menlo', 'Courier New';
+                font-size: 11px; font-weight: bold;
+                border: 1px solid {C_RIDGE};
+                border-radius: 4px; letter-spacing: 1px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #4A4A52, stop:1 #38383E);
+                color: {C_AMBER_GLOW};
+            }}
+        """)
+        self.btn_stop.setEnabled(True)
+        self.seek_slider.setEnabled(True)
+        self.btn_bypass.setEnabled(True)
+
+    @staticmethod
+    def _format_time(ms):
+        total_sec = max(0, ms // 1000)
+        m = total_sec // 60
+        s = total_sec % 60
+        return f"{m}:{s:02d}"
+
+
+# ══════════════════════════════════════════════════
+#  Main Master Panel — Neve/SSL Console
+# ══════════════════════════════════════════════════
+class MasterPanel(QWidget):
+    """
+    AI Master Panel — Neve/SSL Vintage Console design.
+    Opens as separate window from LongPlay Studio main app.
+    """
+
+    master_complete = pyqtSignal(str)
+    master_closed = pyqtSignal()          # V5.5: emitted when Master Module window closes
+    # V5.5 REMOVED: position_changed signal (no RT engine → no position sync needed)
+    request_audio_path = pyqtSignal()
+    _call_on_main = pyqtSignal(object)  # thread-safe main-thread dispatch
+
+    def __init__(self, parent=None, ffmpeg_path: str = "ffmpeg"):
+        super().__init__(parent)
+        self.chain = MasterChain(ffmpeg_path)
+        self.worker = None
+        # V5.0 FIX: Initialize all instance variables to prevent AttributeError
+        self._current_audio_path = None
+        self._last_rec = None
+        self._last_master_rec = None
+
+        # V5.4 FIX: Batch Processing State
+        self.track_queue = []           # List of all track paths to process
+        self.current_track_index = 0    # Current position in queue (0-based)
+        self.batch_mode = False         # True when processing batch
+        self.batch_output_dir = None    # User-selected output directory
+        self._batch_results = []        # List of {path, success, lufs, tp, error}
+
+        # V5.4 FIX: Realtime Meter System (thread-safe)
+        self._meter_buffer = []           # List of recent meter data dicts
+        self._meter_lock = threading.Lock()
+        self._meter_max_buffer_size = 20
+        self._meter_keep_count = 10
+
+        # V5.5 REMOVED: Real-Time Engine deleted — using Offline-Only architecture
+        # All playback via QMediaPlayer (pre-rendered WAV). No sounddevice callbacks.
+        self._rt_playback_active = False   # Kept for compatibility (always False)
+
+        # V5.2: Preview playback with bypass (dual-player for A/B)
+        self._preview_path = None
+        self._original_path = None
+        self._is_preview_loaded = False
+        self._is_bypass_mode = False
+        self._preview_player = QMediaPlayer()
+        self._bypass_player = QMediaPlayer()
+        self._audio_output_master = QAudioOutput()
+        self._audio_output_bypass = QAudioOutput()
+        self._audio_output_master.setVolume(0.85)
+        self._audio_output_bypass.setVolume(0.85)
+        self._preview_player.setAudioOutput(self._audio_output_master)
+        self._bypass_player.setAudioOutput(self._audio_output_bypass)
+        self._preview_player.positionChanged.connect(self._on_player_position)
+        self._preview_player.durationChanged.connect(self._on_player_duration)
+        self._preview_player.mediaStatusChanged.connect(self._on_player_status)
+        self._bypass_player.positionChanged.connect(self._on_player_position)
+        self._bypass_player.durationChanged.connect(self._on_player_duration)
+        self._bypass_player.mediaStatusChanged.connect(self._on_player_status)
+        # V5.1 FIX: Safe main-thread dispatch — catch errors from deleted widgets
+        def _safe_dispatch(fn):
+            try:
+                fn()
+            except RuntimeError as e:
+                # "wrapped C/C++ object has been deleted" — widget was closed
+                print(f"[MASTER UI] Widget deleted during callback: {e}")
+            except Exception as e:
+                print(f"[MASTER UI] Main-thread dispatch error: {e}")
+                import traceback
+                traceback.print_exc()
+        self._call_on_main.connect(_safe_dispatch)
+        self.setStyleSheet(GLOBAL_STYLE)
+        self._setup_ui()
+
+        # V5.4 FIX: QTimer for realtime meter UI updates (20 Hz)
+        self._meter_update_timer = QTimer(self)
+        self._meter_update_timer.setInterval(50)  # 50ms = 20 Hz
+        self._meter_update_timer.timeout.connect(self._update_realtime_meters)
+
+        # Connect meter callback from chain (called from MasterWorker thread)
+        self.chain.set_meter_callback(self._on_meter_data)
+
+        # V5.5 REMOVED: RT position timer (no RT engine anymore)
+        # Position tracking now via QMediaPlayer.positionChanged signal
+
+    def _setup_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── TOP BAR ──
+        root.addWidget(self._build_top_bar())
+
+        # ── MODULE CHAIN ──
+        root.addWidget(self._build_module_chain())
+
+        # ── MAIN CONTENT (detail + meters) ──
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(0)
+
+        # Module detail area (scrollable)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        self.module_stack = QStackedWidget()
+        self.module_stack.addWidget(self._build_eq_view())        # 0
+        self.module_stack.addWidget(self._build_dynamics_view())  # 1
+        self.module_stack.addWidget(self._build_imager_view())    # 2
+        self.module_stack.addWidget(self._build_maximizer_view()) # 3
+        self.module_stack.addWidget(self._build_ai_view())        # 4
+        self.module_stack.setCurrentIndex(4)  # Default to AI view
+        scroll.setWidget(self.module_stack)
+        content.addWidget(scroll, stretch=1)
+
+        # Meters panel
+        self.meters = MetersPanel()
+        content.addWidget(self.meters)
+
+        content_widget = QWidget()
+        content_widget.setLayout(content)
+        root.addWidget(content_widget, stretch=1)
+
+        # ── TRANSPORT BAR removed (V5.5.1: Play/Stop moved to Timeline Preview) ──
+        # Playback controls are now in the main Timeline transport bar.
+        # Preview players kept internally for mastered audio preview if needed.
+
+        # ── ACTION BAR ──
+        root.addWidget(self._build_action_bar())
+
+    # ─── TOP BAR ─────────────────────────────
+    def _build_top_bar(self):
+        bar = QFrame()
+        bar.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {C_PANEL_LIGHT}, stop:0.1 {C_PANEL},
+                    stop:0.9 {C_PANEL_INSET}, stop:1 {C_GROOVE});
+                border-bottom: 1px solid {C_GROOVE};
+                padding: 6px 16px;
+            }}
+        """)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 6, 16, 6)
+        layout.setSpacing(10)
+
+        # Platform
+        layout.addWidget(self._panel_label("PLATFORM"))
+        self.platform_combo = QComboBox()
+        for name, data in PLATFORM_TARGETS.items():
+            self.platform_combo.addItem(f"{name} ({data['target_lufs']} LUFS)")
+        self.platform_combo.setCurrentIndex(0)
+        self.platform_combo.currentIndexChanged.connect(self._on_platform_changed)
+        layout.addWidget(self.platform_combo)
+
+        # Genre
+        layout.addWidget(self._panel_label("GENRE"))
+        self.genre_combo = QComboBox()
+        genres = get_genre_list()
+        for category, genre_names in sorted(genres.items()):
+            for name in sorted(genre_names):
+                self.genre_combo.addItem(f"{name}", userData=name)
+        layout.addWidget(self.genre_combo)
+
+        # File indicator
+        layout.addWidget(self._panel_label("FILE"))
+        self.file_label = QLabel("No file loaded")
+        self.file_label.setStyleSheet(f"color: {C_AMBER}; font-size: 11px; font-weight: bold;")
+        layout.addWidget(self.file_label)
+
+        # Browse button — allows user to select audio manually
+        self.btn_browse = QPushButton("BROWSE")
+        self.btn_browse.setFixedWidth(70)
+        self.btn_browse.setStyleSheet(f"""
+            QPushButton {{
+                background: {C_PANEL_LIGHT};
+                color: {C_AMBER};
+                border: 1px solid {C_GROOVE};
+                border-radius: 3px;
+                padding: 3px 8px;
+                font-size: 10px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {C_GROOVE};
+            }}
+        """)
+        self.btn_browse.clicked.connect(self._on_browse_audio)
+        layout.addWidget(self.btn_browse)
+
+        layout.addStretch()
+
+        # Intensity
+        layout.addWidget(self._panel_label("DRIVE"))
+        self.intensity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.intensity_slider.setRange(0, 100)
+        self.intensity_slider.setValue(65)
+        self.intensity_slider.setFixedWidth(120)
+        self.intensity_slider.valueChanged.connect(self._on_intensity_changed)
+        layout.addWidget(self.intensity_slider)
+
+        self.intensity_value = QLabel("65%")
+        self.intensity_value.setFont(QFont("Menlo", 13, QFont.Weight.Bold))
+        self.intensity_value.setStyleSheet(f"color: {C_AMBER_GLOW};")
+        self.intensity_value.setFixedWidth(40)
+        layout.addWidget(self.intensity_value)
+
+        # Reset
+        btn_reset = QPushButton("RESET")
+        btn_reset.setStyleSheet(BTN_GHOST_STYLE)
+        btn_reset.clicked.connect(self._on_reset_all)
+        layout.addWidget(btn_reset)
+
+        return bar
+
+    # ─── MODULE CHAIN BAR ────────────────────
+    def _build_module_chain(self):
+        bar = QFrame()
+        bar.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {C_PANEL}, stop:0.5 {C_PANEL_INSET}, stop:1 {C_GROOVE});
+                border-bottom: 2px solid {C_GROOVE};
+            }}
+        """)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 6, 16, 6)
+        layout.setSpacing(4)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.chain_nodes = []
+        modules = [
+            ("EQ", "EQUALIZER", "eq", C_MOD_EQ),
+            ("DYN", "DYNAMICS", "dynamics", C_MOD_DYN),
+            ("IMG", "IMAGER", "imager", C_MOD_IMG),
+            ("MAX", "MAXIMIZER", "maximizer", C_MOD_MAX),
+            ("AI", "ASSIST", "ai", C_MOD_AI),
+        ]
+
+        for i, (abbr, name, mid, color) in enumerate(modules):
+            if i > 0:
+                arrow = QLabel("\u25B6")
+                arrow.setStyleSheet(f"color: {C_AMBER_DIM}; font-size: 10px;")
+                arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                layout.addWidget(arrow)
+
+            node = ModuleChainNode(abbr, name, mid, color=color)
+            node.clicked.connect(lambda checked, idx=i: self._switch_module(idx))
+            self.chain_nodes.append(node)
+            layout.addWidget(node)
+
+        # Set AI (index 4) as active by default
+        self.chain_nodes[4].set_active(True)
+
+        return bar
+
+    # ─── EQ VIEW ──────────────────────────────
+    def _build_eq_view(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+
+        # Title + Enable
+        title_row = QHBoxLayout()
+        title_row.addWidget(self._module_title("PARAMETRIC EQUALIZER"))
+        self.eq_enabled = QCheckBox("ACTIVE")
+        self.eq_enabled.setChecked(True)
+        self.eq_enabled.toggled.connect(lambda v: setattr(self.chain.equalizer, 'enabled', v))
+        title_row.addWidget(self.eq_enabled)
+        layout.addLayout(title_row)
+
+        # Preset
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(self._panel_label("TONE PRESET"))
+        self.eq_preset_combo = QComboBox()
+        self.eq_preset_combo.addItems(list(EQ_TONE_PRESETS.keys()))
+        self.eq_preset_combo.currentTextChanged.connect(self._on_eq_preset_changed)
+        preset_row.addWidget(self.eq_preset_combo)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+
+        # ═══ Visual EQ Curve Display (iZotope Ozone style) ═══
+        self.eq_curve = EQCurveWidget()
+        self.eq_curve.setMinimumHeight(200)
+        self.eq_curve.bandChanged.connect(self._on_eq_curve_band_changed)
+        layout.addWidget(self.eq_curve)
+
+        # Band sliders (below the curve)
+        bands_group = QGroupBox("EQ BANDS")
+        bands_layout = QGridLayout()
+        bands_layout.setSpacing(6)
+
+        self.eq_band_sliders = []
+        freq_labels = ["32", "64", "125", "250", "1K", "4K", "8K", "16K"]
+
+        for i in range(8):
+            # Freq label
+            flbl = QLabel(freq_labels[i])
+            flbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            flbl.setStyleSheet(f"font-size:10px; color:{C_GOLD}; letter-spacing:1px;")
+            bands_layout.addWidget(flbl, 0, i, Qt.AlignmentFlag.AlignCenter)
+
+            # Vertical slider
+            slider = QSlider(Qt.Orientation.Vertical)
+            slider.setRange(-120, 120)
+            slider.setValue(0)
+            slider.setFixedHeight(100)
+            slider.valueChanged.connect(lambda v, idx=i: self._on_eq_band_changed(idx, v / 10.0))
+            bands_layout.addWidget(slider, 1, i, Qt.AlignmentFlag.AlignCenter)
+
+            # Value label
+            val_label = QLabel("0.0")
+            val_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            val_label.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+            val_label.setStyleSheet(f"color: {C_AMBER};")
+            bands_layout.addWidget(val_label, 2, i, Qt.AlignmentFlag.AlignCenter)
+
+            self.eq_band_sliders.append((slider, val_label))
+
+        # dB labels
+        plus_lbl = QLabel("+12")
+        plus_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:9px;")
+        bands_layout.addWidget(plus_lbl, 1, 8, Qt.AlignmentFlag.AlignTop)
+        zero_lbl = QLabel("  0")
+        zero_lbl.setStyleSheet(f"color:{C_CREAM_DARK}; font-size:9px;")
+        bands_layout.addWidget(zero_lbl, 1, 8, Qt.AlignmentFlag.AlignVCenter)
+        minus_lbl = QLabel("-12")
+        minus_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:9px;")
+        bands_layout.addWidget(minus_lbl, 1, 8, Qt.AlignmentFlag.AlignBottom)
+
+        bands_group.setLayout(bands_layout)
+        layout.addWidget(bands_group)
+
+        return widget
+
+    # ─── DYNAMICS VIEW ────────────────────────
+    def _build_dynamics_view(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+
+        # Title + Enable
+        title_row = QHBoxLayout()
+        title_row.addWidget(self._module_title("DYNAMICS COMPRESSOR"))
+        self.dyn_enabled = QCheckBox("ACTIVE")
+        self.dyn_enabled.setChecked(True)
+        self.dyn_enabled.toggled.connect(lambda v: setattr(self.chain.dynamics, 'enabled', v))
+        title_row.addWidget(self.dyn_enabled)
+        layout.addLayout(title_row)
+
+        # Preset
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(self._panel_label("PRESET"))
+        self.dyn_preset_combo = QComboBox()
+        self.dyn_preset_combo.addItems(list(DYNAMICS_PRESETS.keys()))
+        self.dyn_preset_combo.setCurrentText("Standard Master")
+        self.dyn_preset_combo.currentTextChanged.connect(self._on_dyn_preset_changed)
+        preset_row.addWidget(self.dyn_preset_combo)
+
+        self.dyn_multiband = QCheckBox("MULTIBAND (3-BAND)")
+        self.dyn_multiband.toggled.connect(lambda v: setattr(self.chain.dynamics, 'multiband', v))
+        preset_row.addWidget(self.dyn_multiband)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+
+        # Dynamics Curve Widget
+        self.dyn_curve = DynamicsCurveWidget()
+        self.dyn_curve.setMinimumHeight(220)
+        self.dyn_curve.thresholdChanged.connect(self._on_dyn_curve_threshold_changed)
+        self.dyn_curve.ratioChanged.connect(self._on_dyn_curve_ratio_changed)
+        layout.addWidget(self.dyn_curve)
+
+        # Controls: Vintage Rotary Knobs
+        ctrl_group = QGroupBox("COMPRESSOR CONTROLS")
+        ctrl_layout = QHBoxLayout()
+        ctrl_layout.setSpacing(8)
+        ctrl_layout.setContentsMargins(12, 12, 12, 12)
+
+        # Define knob parameters: (label, min, max, default, suffix, attr, step)
+        knob_specs = [
+            ("THRESHOLD", -40, 0, -16, " dB", "threshold", 0.5),
+            ("RATIO", 1.0, 20.0, 2.5, ":1", "ratio", 0.1),
+            ("ATTACK", 0.1, 100, 10, " ms", "attack", 0.5),
+            ("RELEASE", 10, 1000, 100, " ms", "release", 5.0),
+            ("MAKEUP", -10, 20, 2.0, " dB", "makeup", 0.2),
+            ("KNEE", 0, 20, 6, " dB", "knee", 0.5),
+        ]
+
+        self.dyn_knobs = {}
+        for name, mn, mx, default, suffix, attr, step in knob_specs:
+            knob = VintageKnobWidget(
+                label=name,
+                min_val=mn,
+                max_val=mx,
+                default=default,
+                suffix=suffix,
+                step=step,
+                decimals=1,
+                color=C_AMBER,
+                parent=self
+            )
+
+            # Connect knob value changes to both curve widget and chain dynamics
+            def make_knob_callback(attribute, curve_widget):
+                def callback(value):
+                    # Update curve widget
+                    if attribute == "threshold":
+                        curve_widget.setThreshold(value)
+                    elif attribute == "ratio":
+                        curve_widget.setRatio(value)
+                    elif attribute == "knee":
+                        curve_widget.setKnee(value)
+                    elif attribute == "attack":
+                        curve_widget.setAttack(value)
+                    elif attribute == "release":
+                        curve_widget.setRelease(value)
+                    elif attribute == "makeup":
+                        curve_widget.setMakeup(value)
+                    # Update chain dynamics
+                    setattr(self.chain.dynamics.single_band, attribute, value)
+                return callback
+
+            knob.valueChanged.connect(make_knob_callback(attr, self.dyn_curve))
+            ctrl_layout.addWidget(knob)
+            self.dyn_knobs[attr] = knob
+
+        ctrl_group.setLayout(ctrl_layout)
+        layout.addWidget(ctrl_group)
+
+        # Parallel Mix
+        mix_group = QGroupBox("PARALLEL MIX")
+        mix_layout = QHBoxLayout()
+        dry_lbl = QLabel("DRY")
+        dry_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:10px;")
+        mix_layout.addWidget(dry_lbl)
+        self.dyn_mix_slider = QSlider(Qt.Orientation.Horizontal)
+        self.dyn_mix_slider.setRange(0, 100)
+        self.dyn_mix_slider.setValue(100)
+        mix_layout.addWidget(self.dyn_mix_slider)
+        wet_lbl = QLabel("WET")
+        wet_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:10px;")
+        mix_layout.addWidget(wet_lbl)
+        self.dyn_mix_val = QLabel("100%")
+        self.dyn_mix_val.setStyleSheet(f"color:{C_AMBER_GLOW}; font-family:'Menlo',monospace; font-weight:bold;")
+        self.dyn_mix_slider.valueChanged.connect(self._on_dyn_mix_changed)
+        mix_layout.addWidget(self.dyn_mix_val)
+        mix_group.setLayout(mix_layout)
+        layout.addWidget(mix_group)
+
+        layout.addWidget(HardwareDecoration(HardwareDecoration.MODE_VU_PANEL))
+        return widget
+
+    # ─── IMAGER VIEW ──────────────────────────
+    def _build_imager_view(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+
+        # Title + Enable
+        title_row = QHBoxLayout()
+        title_row.addWidget(self._module_title("STEREO IMAGER"))
+        self.img_enabled = QCheckBox("ACTIVE")
+        self.img_enabled.setChecked(True)
+        self.img_enabled.toggled.connect(lambda v: setattr(self.chain.imager, 'enabled', v))
+        title_row.addWidget(self.img_enabled)
+        layout.addLayout(title_row)
+
+        # Preset
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(self._panel_label("PRESET"))
+        self.img_preset_combo = QComboBox()
+        self.img_preset_combo.addItems(list(IMAGER_PRESETS.keys()))
+        self.img_preset_combo.currentTextChanged.connect(self._on_img_preset_changed)
+        preset_row.addWidget(self.img_preset_combo)
+
+        self.img_multiband = QCheckBox("MULTIBAND")
+        self.img_multiband.toggled.connect(lambda v: setattr(self.chain.imager, 'multiband', v))
+        preset_row.addWidget(self.img_multiband)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+
+        # Width value display — large VU-style readout
+        width_display = QHBoxLayout()
+        width_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.img_width_value = QLabel("100")
+        self.img_width_value.setFont(QFont("Menlo", 40, QFont.Weight.Bold))
+        self.img_width_value.setStyleSheet(f"color: {C_AMBER_GLOW};")
+        self.img_width_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        width_display.addWidget(self.img_width_value)
+        pct_lbl = QLabel("%")
+        pct_lbl.setFont(QFont("Menlo", 16))
+        pct_lbl.setStyleSheet(f"color: {C_GOLD};")
+        width_display.addWidget(pct_lbl)
+        layout.addLayout(width_display)
+
+        # Width slider
+        width_group = QGroupBox("STEREO WIDTH")
+        width_layout = QHBoxLayout()
+        mono_lbl = QLabel("MONO")
+        mono_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:10px; letter-spacing:1px;")
+        width_layout.addWidget(mono_lbl)
+        self.img_width_slider = QSlider(Qt.Orientation.Horizontal)
+        self.img_width_slider.setRange(0, 200)
+        self.img_width_slider.setValue(100)
+        self.img_width_slider.valueChanged.connect(self._on_img_width_changed)
+        width_layout.addWidget(self.img_width_slider)
+        wide_lbl = QLabel("WIDE")
+        wide_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:10px; letter-spacing:1px;")
+        width_layout.addWidget(wide_lbl)
+        width_group.setLayout(width_layout)
+        layout.addWidget(width_group)
+
+        # Mono Bass
+        bass_group = QGroupBox("OPTIONS")
+        bass_layout = QVBoxLayout()
+
+        mono_row = QHBoxLayout()
+        self.img_mono_bass = QCheckBox("MONO BASS BELOW")
+        self.img_mono_bass.toggled.connect(self._on_img_mono_bass_toggled)
+        mono_row.addWidget(self.img_mono_bass)
+        self.img_mono_freq = QSpinBox()
+        self.img_mono_freq.setRange(0, 300)
+        self.img_mono_freq.setValue(200)
+        self.img_mono_freq.setSuffix(" Hz")
+        self.img_mono_freq.valueChanged.connect(
+            lambda v: setattr(self.chain.imager, 'mono_bass_freq', v if self.img_mono_bass.isChecked() else 0))
+        mono_row.addWidget(self.img_mono_freq)
+        mono_row.addStretch()
+        bass_layout.addLayout(mono_row)
+
+        # Balance
+        bal_row = QHBoxLayout()
+        l_lbl = QLabel("L")
+        l_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:10px;")
+        bal_row.addWidget(l_lbl)
+        self.img_balance = QSlider(Qt.Orientation.Horizontal)
+        self.img_balance.setRange(-100, 100)
+        self.img_balance.setValue(0)
+        self.img_balance.valueChanged.connect(
+            lambda v: setattr(self.chain.imager, 'balance', v / 100.0))
+        bal_row.addWidget(self.img_balance)
+        r_lbl = QLabel("R")
+        r_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:10px;")
+        bal_row.addWidget(r_lbl)
+        bass_layout.addLayout(bal_row)
+
+        bass_group.setLayout(bass_layout)
+        layout.addWidget(bass_group)
+
+        layout.addWidget(HardwareDecoration(HardwareDecoration.MODE_VU_PANEL))
+        return widget
+
+    # ─── MAXIMIZER VIEW — OZONE 12 STYLE ──────────────────────
+    def _build_maximizer_view(self):
+        widget = QWidget()
+        widget.setStyleSheet(f"background: #111114;")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(6)
+
+        # Auto-measure timer (debounced — fires 600ms after last parameter change)
+        self._auto_measure_timer = QTimer()
+        self._auto_measure_timer.setSingleShot(True)
+        self._auto_measure_timer.setInterval(600)
+        self._auto_measure_timer.timeout.connect(self._run_auto_measure)
+
+        # ═══ Title bar: MAXIMIZER + ACTIVE + IRC dropdown ═══
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
+
+        lbl_max = QLabel("MAXIMIZER")
+        lbl_max.setStyleSheet(f"color:{C_TEAL_GLOW}; font-size:11px; font-weight:bold; letter-spacing:2px;")
+        top_row.addWidget(lbl_max)
+
+        self.max_enabled = QCheckBox("ACTIVE")
+        self.max_enabled.setChecked(True)
+        self.max_enabled.setStyleSheet(f"color:{C_TEAL}; font-size:9px; font-weight:bold;")
+        self.max_enabled.toggled.connect(lambda v: setattr(self.chain.maximizer, 'enabled', v))
+        top_row.addWidget(self.max_enabled)
+        top_row.addStretch()
+
+        # IRC Mode dropdown button — teal, Ozone 12 style
+        self.irc_mode_btn = QPushButton("IRC 4 — Classic  ▾")
+        self.irc_mode_btn.setFixedHeight(30)
+        self.irc_mode_btn.setMinimumWidth(180)
+        self.irc_mode_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #1A1A1E;
+                border: 1px solid #2A2A30;
+                border-radius: 4px;
+                color: {C_TEAL_GLOW};
+                font-weight: bold;
+                font-size: 11px;
+                font-family: 'SF Pro Display', 'Menlo', monospace;
+                padding: 4px 12px;
+                text-align: left;
+            }}
+            QPushButton:hover {{
+                border-color: {C_TEAL};
+                color: #FFFFFF;
+            }}
+        """)
+        self.irc_mode_btn.clicked.connect(self._show_irc_menu)
+        top_row.addWidget(self.irc_mode_btn)
+        layout.addLayout(top_row)
+
+        # IRC description (subtle)
+        self.irc_desc_label = QLabel(IRC_MODES.get("IRC 4 - Classic", {}).get("description", ""))
+        self.irc_desc_label.setWordWrap(True)
+        self.irc_desc_label.setStyleSheet(
+            f"color: #6B6B70; font-style: italic; font-size: 8px; padding: 0 0 2px 0;")
+        layout.addWidget(self.irc_desc_label)
+
+        # ═══ MAIN AREA: Gain Dial + Output/Character + Meter ═══
+        main_row = QHBoxLayout()
+        main_row.setSpacing(12)
+
+        # ── LEFT: Large Gain Knob + dB Display ──
+        gain_col = QVBoxLayout()
+        gain_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gain_col.setSpacing(4)
+
+        gain_lbl = QLabel("GAIN")
+        gain_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gain_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:8px; letter-spacing:2px; font-weight:bold;")
+        gain_col.addWidget(gain_lbl)
+
+        self.max_gain_dial = QDial()
+        self.max_gain_dial.setRange(0, 200)  # V5.5.1: 0-20 dB (was 12 dB)
+        self.max_gain_dial.setValue(0)
+        self.max_gain_dial.setFixedSize(110, 110)
+        self.max_gain_dial.setNotchesVisible(True)
+        self.max_gain_dial.setStyleSheet(f"""
+            QDial {{
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
+                    fx:0.4, fy:0.4,
+                    stop:0 #2A2A30, stop:0.6 #1A1A1E,
+                    stop:0.85 #111114, stop:1 #0A0A0C);
+                border: 2px solid {C_TEAL_DIM};
+                border-radius: 55px;
+            }}
+        """)
+        self.max_gain_dial.valueChanged.connect(self._on_gain_changed)
+        gain_col.addWidget(self.max_gain_dial, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.max_gain_display = QLabel("+0.0")
+        self.max_gain_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.max_gain_display.setFont(QFont("Menlo", 24, QFont.Weight.Bold))
+        self.max_gain_display.setStyleSheet(f"color: {C_TEAL_GLOW};")
+        gain_col.addWidget(self.max_gain_display)
+
+        gain_unit = QLabel("dB")
+        gain_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gain_unit.setStyleSheet(f"color:#6B6B70; font-size:9px;")
+        gain_col.addWidget(gain_unit)
+
+        main_row.addLayout(gain_col, 3)
+
+        # ── CENTER: Output Level + True Peak + Character + Learn ──
+        center_col = QVBoxLayout()
+        center_col.setSpacing(6)
+
+        # Output Level row
+        out_row = QHBoxLayout()
+        out_row.setSpacing(6)
+        out_lbl = QLabel("OUTPUT")
+        out_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:8px; letter-spacing:1.5px; font-weight:bold;")
+        out_row.addWidget(out_lbl)
+
+        self.max_ceiling = QDoubleSpinBox()
+        self.max_ceiling.setRange(-3.0, -0.1)
+        self.max_ceiling.setValue(-1.0)
+        self.max_ceiling.setSingleStep(0.01)
+        self.max_ceiling.setDecimals(2)
+        self.max_ceiling.setSuffix(" dBTP")
+        self.max_ceiling.setStyleSheet(f"""
+            QDoubleSpinBox {{
+                background: #1A1A1E; border: 1px solid #2A2A30; border-radius: 3px;
+                color: {C_TEAL_GLOW}; font-family: 'Menlo'; font-size: 12px;
+                font-weight: bold; padding: 2px 6px;
+            }}
+        """)
+        self.max_ceiling.valueChanged.connect(self._on_ceiling_changed)
+        out_row.addWidget(self.max_ceiling)
+
+        self.max_true_peak = QCheckBox("TRUE PEAK")
+        self.max_true_peak.setChecked(True)
+        self.max_true_peak.setStyleSheet(f"color:{C_TEAL}; font-size:9px; font-weight:bold;")
+        self.max_true_peak.toggled.connect(
+            lambda v: setattr(self.chain.maximizer, 'true_peak', v))
+        out_row.addWidget(self.max_true_peak)
+        center_col.addLayout(out_row)
+
+        # Character slider: Smooth ←→ Aggressive
+        char_row = QHBoxLayout()
+        char_row.setSpacing(4)
+        s_lbl = QLabel("SMOOTH")
+        s_lbl.setStyleSheet("color:#6B6B70; font-size:7px; letter-spacing:1px;")
+        char_row.addWidget(s_lbl)
+
+        self.max_character = QSlider(Qt.Orientation.Horizontal)
+        self.max_character.setRange(0, 100)
+        self.max_character.setValue(30)
+        self.max_character.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                background: #1A1A1E; height: 4px; border-radius: 2px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {C_TEAL}; width: 12px; height: 12px;
+                margin: -4px 0; border-radius: 6px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {C_TEAL_DIM}; border-radius: 2px;
+            }}
+        """)
+        self.max_character.valueChanged.connect(self._on_character_changed)
+        char_row.addWidget(self.max_character)
+
+        a_lbl = QLabel("AGGR")
+        a_lbl.setStyleSheet("color:#6B6B70; font-size:7px; letter-spacing:1px;")
+        char_row.addWidget(a_lbl)
+
+        self.max_char_val = QLabel("3.00")
+        self.max_char_val.setFixedWidth(40)
+        self.max_char_val.setStyleSheet(
+            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-weight:bold; font-size:11px;")
+        char_row.addWidget(self.max_char_val)
+        center_col.addLayout(char_row)
+
+        # Tone chip buttons
+        tone_row = QHBoxLayout()
+        tone_row.setSpacing(3)
+        tone_lbl = QLabel("TONE")
+        tone_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:7px; letter-spacing:1.5px; font-weight:bold;")
+        tone_row.addWidget(tone_lbl)
+        self.tone_buttons = []
+        tone_names = list(TONE_PRESETS.keys())
+        for i, name in enumerate(tone_names):
+            btn = QPushButton(name[:4].upper())
+            btn.setCheckable(True)
+            btn.setFixedHeight(22)
+            btn.setFixedWidth(42)
+            btn.clicked.connect(lambda checked, idx=i: self._on_tone_clicked(idx))
+            self.tone_buttons.append(btn)
+            tone_row.addWidget(btn)
+        self.tone_buttons[0].setChecked(True)
+        self._update_tone_button_styles()
+        center_col.addLayout(tone_row)
+
+        # Learn Input Gain button + LUFS
+        learn_row = QHBoxLayout()
+        learn_row.setSpacing(6)
+        self.btn_learn_gain = QPushButton("LEARN INPUT GAIN")
+        self.btn_learn_gain.setFixedHeight(26)
+        self.btn_learn_gain.setStyleSheet(f"""
+            QPushButton {{
+                background: #1A1A1E; border: 1px solid {C_TEAL_DIM};
+                border-radius: 3px; color: {C_TEAL}; font-weight: bold;
+                font-size: 9px; padding: 3px 10px;
+            }}
+            QPushButton:hover {{ background: {C_TEAL_DIM}; color: #FFFFFF; }}
+        """)
+        self.btn_learn_gain.clicked.connect(self._on_learn_gain)
+        learn_row.addWidget(self.btn_learn_gain)
+
+        self.max_lufs_label = QLabel("— LUFS")
+        self.max_lufs_label.setStyleSheet(
+            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-weight:bold; font-size:10px;")
+        learn_row.addWidget(self.max_lufs_label)
+        learn_row.addStretch()
+        center_col.addLayout(learn_row)
+
+        main_row.addLayout(center_col, 4)
+
+        # ── RIGHT: Dual L/R Level Meter (Logic Pro / Ozone 12 style) ──
+        meter_col = QVBoxLayout()
+        meter_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        meter_col.setSpacing(2)
+
+        # V5.5: Removed duplicate LEVEL meter (OzoneLevelMeter)
+        # Metering now shows ONLY in MINI METER (main GUI) + REAL-TIME METERING panel
+        # Keep True Peak dBTP display here in Maximizer section
+        self.max_meter_db = QLabel("—  dB")
+        self.max_meter_db.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.max_meter_db.setStyleSheet(
+            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-size:9px; font-weight:bold;")
+        meter_col.addWidget(self.max_meter_db)
+
+        main_row.addLayout(meter_col, 2)
+        layout.addLayout(main_row)
+
+        # ═══ GAIN REDUCTION bar (horizontal, Ozone teal) ═══
+        gr_row = QHBoxLayout()
+        gr_row.setSpacing(6)
+        gr_lbl = QLabel("GR")
+        gr_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:8px; font-weight:bold; letter-spacing:1px;")
+        gr_row.addWidget(gr_lbl)
+
+        self.max_gr_bar = QProgressBar()
+        self.max_gr_bar.setRange(0, 200)
+        self.max_gr_bar.setValue(0)
+        self.max_gr_bar.setFixedHeight(12)
+        self.max_gr_bar.setTextVisible(False)
+        self.max_gr_bar.setStyleSheet(f"""
+            QProgressBar {{
+                background: #141416; border: 1px solid #2A2A30; border-radius: 2px;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 {C_TEAL}, stop:1 {C_TEAL_GLOW});
+                border-radius: 2px;
+            }}
+        """)
+        gr_row.addWidget(self.max_gr_bar)
+
+        self.max_gr_label = QLabel("0.0 dB")
+        self.max_gr_label.setFixedWidth(55)
+        self.max_gr_label.setStyleSheet(
+            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-weight:bold; font-size:10px;")
+        gr_row.addWidget(self.max_gr_label)
+        layout.addLayout(gr_row)
+
+        # ═══ ADVANCED section (compact grid) ═══
+        adv_frame = QFrame()
+        adv_frame.setStyleSheet(f"background:#141416; border:1px solid #1E1E22; border-radius:4px;")
+        adv_layout = QGridLayout(adv_frame)
+        adv_layout.setContentsMargins(8, 6, 8, 6)
+        adv_layout.setSpacing(4)
+
+        adv_title = QLabel("ADVANCED")
+        adv_title.setStyleSheet(f"color:#6B6B70; font-size:7px; letter-spacing:2px; font-weight:bold; border:none;")
+        adv_layout.addWidget(adv_title, 0, 0, 1, 4)
+
+        _spin_ss = f"""
+            QSpinBox, QDoubleSpinBox {{
+                background:#1A1A1E; border:1px solid #2A2A30; border-radius:2px;
+                color:{C_TEAL_GLOW}; font-family:'Menlo'; font-size:10px; padding:1px 3px;
+            }}
+        """
+
+        # Row 1: Upward Compress + Soft Clip
+        _lbl = lambda t: self._ozone_label(t)
+        adv_layout.addWidget(_lbl("UPWARD"), 1, 0)
+        self.max_upward = QDoubleSpinBox()
+        self.max_upward.setRange(0.0, 12.0)
+        self.max_upward.setValue(0.0)
+        self.max_upward.setSingleStep(0.5)
+        self.max_upward.setSuffix(" dB")
+        self.max_upward.setStyleSheet(_spin_ss)
+        self.max_upward.valueChanged.connect(
+            lambda v: (self.chain.maximizer.set_upward_compress(v), self._schedule_auto_measure()))
+        adv_layout.addWidget(self.max_upward, 1, 1)
+
+        self.max_softclip_chk = QCheckBox("SOFT CLIP")
+        self.max_softclip_chk.setStyleSheet(f"color:{C_TEAL}; font-size:9px; font-weight:bold; border:none;")
+        self.max_softclip_chk.toggled.connect(self._on_softclip_toggled)
+        adv_layout.addWidget(self.max_softclip_chk, 1, 2)
+
+        self.max_softclip_pct = QSpinBox()
+        self.max_softclip_pct.setRange(0, 100)
+        self.max_softclip_pct.setValue(0)
+        self.max_softclip_pct.setSuffix(" %")
+        self.max_softclip_pct.setStyleSheet(_spin_ss)
+        self.max_softclip_pct.valueChanged.connect(self._on_softclip_pct_changed)
+        adv_layout.addWidget(self.max_softclip_pct, 1, 3)
+
+        # Row 2: Transient Emphasis + H/M/L
+        adv_layout.addWidget(_lbl("TRANSIENT"), 2, 0)
+        self.max_transient = QSpinBox()
+        self.max_transient.setRange(0, 100)
+        self.max_transient.setValue(0)
+        self.max_transient.setSuffix(" %")
+        self.max_transient.setStyleSheet(_spin_ss)
+        self.max_transient.valueChanged.connect(self._on_transient_changed)
+        adv_layout.addWidget(self.max_transient, 2, 1)
+
+        band_row = QHBoxLayout()
+        band_row.setSpacing(2)
+        self.max_band_btns = []
+        for band in ["L", "M", "H"]:
+            btn = QPushButton(band)
+            btn.setCheckable(True)
+            btn.setFixedSize(26, 22)
+            btn.clicked.connect(lambda checked, b=band: self._on_transient_band(b))
+            self.max_band_btns.append(btn)
+            band_row.addWidget(btn)
+        self.max_band_btns[1].setChecked(True)
+        self._update_band_button_styles()
+        band_w = QWidget()
+        band_w.setStyleSheet("border:none;")
+        band_w.setLayout(band_row)
+        adv_layout.addWidget(band_w, 2, 2, 1, 2)
+
+        # Row 3: Stereo Independence
+        adv_layout.addWidget(_lbl("STEREO IND"), 3, 0)
+        si_row = QHBoxLayout()
+        si_row.setSpacing(3)
+        t_lbl = QLabel("T:")
+        t_lbl.setStyleSheet(f"color:#6B6B70; font-size:8px; border:none;")
+        si_row.addWidget(t_lbl)
+        self.max_si_transient = QSpinBox()
+        self.max_si_transient.setRange(0, 100)
+        self.max_si_transient.setValue(0)
+        self.max_si_transient.setSuffix("%")
+        self.max_si_transient.setStyleSheet(_spin_ss)
+        self.max_si_transient.valueChanged.connect(self._on_stereo_ind_changed)
+        si_row.addWidget(self.max_si_transient)
+        s_lbl2 = QLabel("S:")
+        s_lbl2.setStyleSheet(f"color:#6B6B70; font-size:8px; border:none;")
+        si_row.addWidget(s_lbl2)
+        self.max_si_sustain = QSpinBox()
+        self.max_si_sustain.setRange(0, 100)
+        self.max_si_sustain.setValue(0)
+        self.max_si_sustain.setSuffix("%")
+        self.max_si_sustain.setStyleSheet(_spin_ss)
+        self.max_si_sustain.valueChanged.connect(self._on_stereo_ind_changed)
+        si_row.addWidget(self.max_si_sustain)
+        si_w = QWidget()
+        si_w.setStyleSheet("border:none;")
+        si_w.setLayout(si_row)
+        adv_layout.addWidget(si_w, 3, 1, 1, 3)
+
+        layout.addWidget(adv_frame)
+
+        # ═══ Measure Button (Ozone teal) ═══
+        self.btn_measure = QPushButton("⟳  MEASURE LEVELS")
+        self.btn_measure.setFixedHeight(30)
+        self.btn_measure.setStyleSheet(f"""
+            QPushButton {{
+                background: #1A1A1E; border: 1px solid {C_TEAL_DIM};
+                border-radius: 4px; color: {C_TEAL}; font-weight: bold;
+                font-size: 10px; letter-spacing: 1px;
+            }}
+            QPushButton:hover {{ background: {C_TEAL_DIM}; color: #FFFFFF; }}
+        """)
+        self.btn_measure.clicked.connect(self._on_measure_levels)
+        layout.addWidget(self.btn_measure)
+
+        return widget
+
+    def _ozone_label(self, text):
+        """Create a small teal label for Ozone 12 style."""
+        lbl = QLabel(text)
+        lbl.setStyleSheet(f"color:{C_TEAL}; font-size:8px; letter-spacing:1px; font-weight:bold; border:none;")
+        return lbl
+
+    def _schedule_auto_measure(self):
+        """Schedule an auto-measure after parameter change (debounced 600ms)."""
+        if hasattr(self, '_auto_measure_timer'):
+            self._auto_measure_timer.start()  # restart timer
+
+    # ─── AI ASSIST VIEW ──────────────────────
+    def _build_ai_view(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+
+        layout.addWidget(self._module_title("MASTER ASSISTANT"))
+
+        # Genre + Platform (compact row)
+        config_row = QHBoxLayout()
+        config_row.addWidget(self._panel_label("GENRE"))
+        self.ai_genre = QComboBox()
+        self.ai_genre.addItems(sorted(GENRE_PROFILES.keys()))
+        config_row.addWidget(self.ai_genre)
+
+        config_row.addWidget(self._panel_label("PLATFORM"))
+        self.platform_combo_ai = QComboBox()
+        for name, data in PLATFORM_TARGETS.items():
+            self.platform_combo_ai.addItem(f"{name} ({data['target_lufs']} LUFS)")
+        config_row.addWidget(self.platform_combo_ai)
+        config_row.addStretch()
+        layout.addLayout(config_row)
+
+        # Mastering Drive intensity
+        ai_int_group = QGroupBox("MASTERING DRIVE")
+        ai_int_layout = QHBoxLayout()
+        cons_lbl = QLabel("CONSERVATIVE")
+        cons_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:9px; letter-spacing:1px;")
+        ai_int_layout.addWidget(cons_lbl)
+        self.ai_intensity = QSlider(Qt.Orientation.Horizontal)
+        self.ai_intensity.setRange(0, 100)
+        self.ai_intensity.setValue(65)
+        ai_int_layout.addWidget(self.ai_intensity)
+        agg_lbl = QLabel("AGGRESSIVE")
+        agg_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:9px; letter-spacing:1px;")
+        ai_int_layout.addWidget(agg_lbl)
+        self.ai_intensity_label = QLabel("65%")
+        self.ai_intensity_label.setStyleSheet(
+            f"color:{C_AMBER_GLOW}; font-family:'Menlo',monospace; font-weight:bold;")
+        self.ai_intensity.valueChanged.connect(
+            lambda v: self.ai_intensity_label.setText(f"{v}%"))
+        ai_int_layout.addWidget(self.ai_intensity_label)
+        ai_int_group.setLayout(ai_int_layout)
+        layout.addWidget(ai_int_group)
+
+        # BIG MASTER BUTTON
+        self.btn_master = QPushButton("⚡  M A S T E R")
+        self.btn_master.setFixedHeight(80)
+        self.btn_master.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {C_TEAL_GLOW}, stop:0.1 {C_TEAL}, stop:0.9 {C_TEAL_DIM}, stop:1 #004466);
+                color: #FFFFFF;
+                border: 2px solid {C_TEAL_DIM};
+                border-top: 2px solid {C_TEAL_GLOW};
+                border-radius: 6px;
+                padding: 16px;
+                font-size: 18px;
+                font-weight: bold;
+                font-family: 'Menlo', monospace;
+                letter-spacing: 3px;
+                text-transform: uppercase;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #5AD8F0, stop:0.1 {C_TEAL_GLOW},
+                    stop:0.9 {C_TEAL}, stop:1 {C_TEAL_DIM});
+                border-color: {C_TEAL_GLOW};
+            }}
+            QPushButton:pressed {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #004466, stop:0.1 {C_TEAL_DIM},
+                    stop:0.9 {C_TEAL}, stop:1 {C_TEAL_GLOW});
+                border-top: 2px solid #004466;
+            }}
+            QPushButton:disabled {{
+                background: {C_PANEL};
+                color: {C_CREAM_DARK};
+                border-color: {C_GROOVE};
+            }}
+        """)
+        self.btn_master.clicked.connect(self._on_one_button_master)
+        layout.addWidget(self.btn_master)
+
+        # Master progress bar
+        self.master_progress = QProgressBar()
+        self.master_progress.setRange(0, 100)
+        self.master_progress.setValue(0)
+        self.master_progress.setFixedHeight(12)
+        self.master_progress.setTextVisible(False)
+        self.master_progress.setVisible(False)
+        self.master_progress.setStyleSheet(f"""
+            QProgressBar {{
+                background: {C_PANEL_INSET};
+                border: 1px solid {C_GROOVE};
+                border-radius: 6px;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 {C_TEAL_DIM}, stop:0.5 {C_TEAL}, stop:1 {C_TEAL_GLOW});
+                border-radius: 5px;
+            }}
+        """)
+        layout.addWidget(self.master_progress)
+
+        # Master status
+        self.master_status = QLabel("READY")
+        self.master_status.setStyleSheet(f"color:{C_AMBER}; font-size:11px; font-weight:bold; letter-spacing:1px;")
+        self.master_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.master_status)
+
+        # Results frame (appears after mastering)
+        self.master_results_frame = QGroupBox("RESULTS")
+        self.master_results_frame.setVisible(False)
+        res_layout = QVBoxLayout()
+
+        # Before/After LUFS display
+        self.master_lufs_before = QLabel("BEFORE: --.- LUFS")
+        self.master_lufs_before.setStyleSheet(f"color:{C_CREAM}; font-size:11px; font-weight:bold;")
+        res_layout.addWidget(self.master_lufs_before)
+
+        self.master_lufs_after = QLabel("AFTER: --.- LUFS")
+        self.master_lufs_after.setStyleSheet(f"color:{C_TEAL_GLOW}; font-size:11px; font-weight:bold;")
+        res_layout.addWidget(self.master_lufs_after)
+
+        self.master_confidence = QLabel("CONFIDENCE: --% MEETS TARGET")
+        self.master_confidence.setStyleSheet(f"color:{C_AMBER}; font-size:11px; font-weight:bold;")
+        res_layout.addWidget(self.master_confidence)
+
+        self.master_results_frame.setLayout(res_layout)
+        layout.addWidget(self.master_results_frame)
+
+        # Post-mastering controls frame
+        self.post_master_frame = QGroupBox("ADJUST")
+        self.post_master_frame.setVisible(False)
+        adjust_layout = QVBoxLayout()
+
+        # EQ Amount
+        eq_row = QHBoxLayout()
+        eq_row.addWidget(QLabel("EQ AMOUNT"))
+        self.post_eq_slider = QSlider(Qt.Orientation.Horizontal)
+        self.post_eq_slider.setRange(0, 100)
+        self.post_eq_slider.setValue(100)
+        eq_row.addWidget(self.post_eq_slider)
+        self.post_eq_label = QLabel("100%")
+        self.post_eq_label.setStyleSheet(f"color:{C_AMBER_GLOW}; font-weight:bold; min-width:35px;")
+        self.post_eq_slider.valueChanged.connect(self._on_post_eq_changed)
+        eq_row.addWidget(self.post_eq_label)
+        adjust_layout.addLayout(eq_row)
+
+        # Dynamics Amount
+        dyn_row = QHBoxLayout()
+        dyn_row.addWidget(QLabel("DYNAMICS"))
+        self.post_dyn_slider = QSlider(Qt.Orientation.Horizontal)
+        self.post_dyn_slider.setRange(0, 100)
+        self.post_dyn_slider.setValue(100)
+        dyn_row.addWidget(self.post_dyn_slider)
+        self.post_dyn_label = QLabel("100%")
+        self.post_dyn_label.setStyleSheet(f"color:{C_AMBER_GLOW}; font-weight:bold; min-width:35px;")
+        self.post_dyn_slider.valueChanged.connect(self._on_post_dyn_changed)
+        dyn_row.addWidget(self.post_dyn_label)
+        adjust_layout.addLayout(dyn_row)
+
+        # Stereo Width
+        width_row = QHBoxLayout()
+        width_row.addWidget(QLabel("WIDTH"))
+        self.post_width_slider = QSlider(Qt.Orientation.Horizontal)
+        self.post_width_slider.setRange(50, 200)
+        self.post_width_slider.setValue(100)
+        width_row.addWidget(self.post_width_slider)
+        self.post_width_label = QLabel("100%")
+        self.post_width_label.setStyleSheet(f"color:{C_AMBER_GLOW}; font-weight:bold; min-width:35px;")
+        self.post_width_slider.valueChanged.connect(self._on_post_width_changed)
+        width_row.addWidget(self.post_width_label)
+        adjust_layout.addLayout(width_row)
+
+        # Ceiling
+        ceil_row = QHBoxLayout()
+        ceil_row.addWidget(QLabel("CEILING"))
+        self.post_ceiling_slider = QSlider(Qt.Orientation.Horizontal)
+        self.post_ceiling_slider.setRange(-30, -1)
+        self.post_ceiling_slider.setValue(-10)
+        ceil_row.addWidget(self.post_ceiling_slider)
+        self.post_ceiling_label = QLabel("-1.0 dB")
+        self.post_ceiling_label.setStyleSheet(f"color:{C_AMBER_GLOW}; font-weight:bold; min-width:50px;")
+        self.post_ceiling_slider.valueChanged.connect(self._on_post_ceiling_changed)
+        ceil_row.addWidget(self.post_ceiling_label)
+        adjust_layout.addLayout(ceil_row)
+
+        # Buttons row
+        btn_row = QHBoxLayout()
+        self.btn_remaster = QPushButton("RE-MASTER")
+        self.btn_remaster.setStyleSheet(BTN_TEAL_STYLE)
+        self.btn_remaster.clicked.connect(self._on_remaster)
+        btn_row.addWidget(self.btn_remaster)
+
+        self.btn_render_full = QPushButton("RENDER FULL")
+        self.btn_render_full.setStyleSheet(BTN_PRIMARY_STYLE)
+        self.btn_render_full.clicked.connect(self._on_render_full_from_master)
+        btn_row.addWidget(self.btn_render_full)
+
+        adjust_layout.addLayout(btn_row)
+
+        self.post_master_frame.setLayout(adjust_layout)
+        layout.addWidget(self.post_master_frame)
+
+        # Hardware decoration — signal flow diagram fills empty space
+        layout.addWidget(HardwareDecoration(HardwareDecoration.MODE_SIGNAL_FLOW))
+        return widget
+
+    # ─── ACTION BAR ──────────────────────────
+    def _build_action_bar(self):
+        bar = QFrame()
+        bar.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {C_RIDGE}, stop:0.05 {C_PANEL},
+                    stop:0.95 {C_PANEL_INSET}, stop:1 {C_GROOVE});
+                border-top: 1px solid {C_GROOVE};
+            }}
+        """)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(8)
+
+        self.btn_analyze = QPushButton("ANALYZE")
+        self.btn_analyze.setStyleSheet(BTN_SECONDARY_STYLE)
+        self.btn_analyze.clicked.connect(self._on_analyze)
+        layout.addWidget(self.btn_analyze)
+
+        self.btn_preview = QPushButton("PREVIEW 30s")
+        self.btn_preview.setStyleSheet(BTN_SECONDARY_STYLE)
+        self.btn_preview.clicked.connect(self._on_preview)
+        layout.addWidget(self.btn_preview)
+
+        self.btn_ab = QPushButton("A/B COMPARE")
+        self.btn_ab.setStyleSheet(BTN_SECONDARY_STYLE)
+        self.btn_ab.clicked.connect(self._on_ab_compare)
+        self.btn_ab.setEnabled(False)
+        layout.addWidget(self.btn_ab)
+
+        self.btn_render = QPushButton("MASTER & EXPORT")
+        self.btn_render.setStyleSheet(BTN_PRIMARY_STYLE)
+        self.btn_render.clicked.connect(self._on_render)
+        layout.addWidget(self.btn_render)
+
+        # V5.4 FIX: Batch Master button
+        self.btn_batch_render = QPushButton("⚡ BATCH MASTER ALL")
+        self.btn_batch_render.setStyleSheet(
+            "QPushButton { background: #008B8B; color: white; font-weight: bold; "
+            "font-size: 11px; padding: 8px 16px; border-radius: 4px; } "
+            "QPushButton:hover { background: #00AAAA; }")
+        self.btn_batch_render.setToolTip("Master all tracks in the current playlist")
+        self.btn_batch_render.clicked.connect(self._on_batch_render)
+        layout.addWidget(self.btn_batch_render)
+
+        # V5.4 FIX: Live stage label for meter display
+        self.live_stage_label = QLabel("STAGE: IDLE")
+        self.live_stage_label.setStyleSheet(
+            f"font-size: 9px; color: {C_AMBER}; font-weight: bold; letter-spacing: 1px;")
+        layout.addWidget(self.live_stage_label)
+
+        # Progress area
+        progress_layout = QHBoxLayout()
+        progress_layout.setSpacing(8)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        progress_layout.addWidget(self.progress_bar)
+
+        self.progress_text = QLabel("READY")
+        self.progress_text.setStyleSheet(
+            f"font-size:10px; color:{C_AMBER}; font-weight:bold; letter-spacing:1px;")
+        self.progress_text.setMinimumWidth(120)
+        progress_layout.addWidget(self.progress_text)
+
+        layout.addLayout(progress_layout, stretch=1)
+
+        return bar
+
+    # ═══════════════════════════════════════════
+    #  Event Handlers
+    # ═══════════════════════════════════════════
+
+    def _switch_module(self, index: int):
+        for i, node in enumerate(self.chain_nodes):
+            node.set_active(i == index)
+        self.module_stack.setCurrentIndex(index)
+
+    def _on_platform_changed(self, index: int):
+        platform_names = list(PLATFORM_TARGETS.keys())
+        if 0 <= index < len(platform_names):
+            platform = platform_names[index]
+            self.chain.set_platform(platform)
+            target = PLATFORM_TARGETS[platform]
+            self.meters.update_target(target["target_lufs"], target["true_peak"], platform)
+            self.max_ceiling.setValue(target["true_peak"])
+
+    def _on_intensity_changed(self, value: int):
+        self.chain.intensity = value
+        self.intensity_value.setText(f"{value}%")
+
+    def _on_reset_all(self):
+        self.chain = MasterChain(self.chain.ffmpeg_path)
+        if hasattr(self, '_current_audio_path'):
+            self.chain.load_audio(self._current_audio_path)
+        self._sync_ui_from_chain()
+
+    def _on_eq_preset_changed(self, preset: str):
+        self.chain.equalizer.load_tone_preset(preset)
+        for i, band in enumerate(self.chain.equalizer.bands):
+            if i < len(self.eq_band_sliders):
+                slider, label = self.eq_band_sliders[i]
+                slider.blockSignals(True)
+                slider.setValue(int(band.gain * 10))
+                slider.blockSignals(False)
+                label.setText(f"{band.gain:.1f}")
+
+    def _on_eq_band_changed(self, index: int, gain: float):
+        self.chain.equalizer.set_band(index, gain=gain)
+        self.chain.equalizer.preset_mode = False
+        if index < len(self.eq_band_sliders):
+            _, label = self.eq_band_sliders[index]
+            label.setText(f"{gain:.1f}")
+        # Sync EQ curve display
+        if hasattr(self, 'eq_curve'):
+            self.eq_curve.setGain(index, gain)
+
+    def _on_eq_curve_band_changed(self, band: int, gain_db: float):
+        """Called when user drags a band node on the EQ curve widget."""
+        gain_db = round(gain_db, 1)
+        # Update the corresponding slider
+        if 0 <= band < len(self.eq_band_sliders):
+            slider, val_label = self.eq_band_sliders[band]
+            slider.blockSignals(True)
+            slider.setValue(int(gain_db * 10))
+            slider.blockSignals(False)
+            val_label.setText(f"{gain_db:.1f}")
+        # Update the chain
+        self._on_eq_band_changed(band, gain_db)
+
+    def _on_dyn_mix_changed(self, value: int):
+        """Parallel Mix slider → updates dry/wet mix parameter."""
+        mix = value / 100.0
+        self.chain.dynamics.single_band.parallel_mix = mix
+        self.dyn_mix_val.setText(f"{value}%")
+
+    def _on_dyn_preset_changed(self, preset: str):
+        self.chain.dynamics.load_preset(preset)
+        band = self.chain.dynamics.single_band
+        for attr, knob in self.dyn_knobs.items():
+            knob.blockSignals(True)
+            knob.setValue(getattr(band, attr, knob.value()))
+            knob.blockSignals(False)
+        # Update curve widget from preset
+        if hasattr(self, 'dyn_curve'):
+            self.dyn_curve.blockSignals(True)
+            self.dyn_curve.setThreshold(band.threshold)
+            self.dyn_curve.setRatio(band.ratio)
+            self.dyn_curve.setKnee(band.knee)
+            self.dyn_curve.setAttack(band.attack)
+            self.dyn_curve.setRelease(band.release)
+            self.dyn_curve.setMakeup(band.makeup)
+            self.dyn_curve.blockSignals(False)
+
+    def _on_dyn_curve_threshold_changed(self, db: float):
+        """Called when user drags threshold line on curve widget"""
+        try:
+            if 'threshold' in self.dyn_knobs:
+                self.dyn_knobs['threshold'].blockSignals(True)
+                self.dyn_knobs['threshold'].setValue(db)
+                self.dyn_knobs['threshold'].blockSignals(False)
+            if hasattr(self.chain, 'dynamics') and hasattr(self.chain.dynamics, 'single_band'):
+                setattr(self.chain.dynamics.single_band, 'threshold', db)
+        except Exception as e:
+            print(f"[MASTER UI] _on_dyn_curve_threshold_changed error: {e}")
+
+    def _on_dyn_curve_ratio_changed(self, ratio: float):
+        """Called when user drags curve to adjust ratio"""
+        try:
+            if 'ratio' in self.dyn_knobs:
+                self.dyn_knobs['ratio'].blockSignals(True)
+                self.dyn_knobs['ratio'].setValue(ratio)
+                self.dyn_knobs['ratio'].blockSignals(False)
+            if hasattr(self.chain, 'dynamics') and hasattr(self.chain.dynamics, 'single_band'):
+                setattr(self.chain.dynamics.single_band, 'ratio', ratio)
+        except Exception as e:
+            print(f"[MASTER UI] _on_dyn_curve_ratio_changed error: {e}")
+
+    def _on_img_preset_changed(self, preset: str):
+        self.chain.imager.load_preset(preset)
+        self.img_width_slider.blockSignals(True)
+        self.img_width_slider.setValue(self.chain.imager.width)
+        self.img_width_slider.blockSignals(False)
+        self.img_width_value.setText(f"{self.chain.imager.width}")
+
+    def _on_img_width_changed(self, value: int):
+        self.chain.imager.set_width(value)
+        self.img_width_value.setText(f"{value}")
+
+    def _on_img_mono_bass_toggled(self, checked: bool):
+        if checked:
+            self.chain.imager.mono_bass_freq = self.img_mono_freq.value()
+        else:
+            self.chain.imager.mono_bass_freq = 0
+
+    # ═══ MAXIMIZER HANDLERS — Ozone 12 Style ═══
+
+    def _show_irc_menu(self):
+        """Show IRC mode dropdown menu with sub-menus (Ozone 12 style)."""
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background: #1A1A1E; border: 1px solid #2A2A30;
+                color: {C_CREAM}; font-family: 'SF Pro Display', 'Menlo';
+                font-size: 11px; padding: 4px;
+            }}
+            QMenu::item {{ padding: 6px 20px; border-radius: 3px; }}
+            QMenu::item:selected {{ background: {C_TEAL_DIM}; color: #FFFFFF; }}
+            QMenu::separator {{ height: 1px; background: #2A2A30; margin: 4px 8px; }}
+        """)
+
+        for mode_key in IRC_TOP_MODES:
+            mode_data = IRC_MODES.get(mode_key, {})
+            sub_modes = mode_data.get("sub_modes", [])
+            if sub_modes:
+                sub_menu = menu.addMenu(mode_data.get("name", mode_key))
+                sub_menu.setStyleSheet(menu.styleSheet())
+                for sub in sub_modes:
+                    action = sub_menu.addAction(sub)
+                    action.triggered.connect(
+                        lambda checked, m=mode_key, s=sub: self._select_irc(m, s))
+            else:
+                display_name = mode_data.get("name", mode_key)
+                action = menu.addAction(display_name)
+                action.triggered.connect(
+                    lambda checked, m=mode_key: self._select_irc(m, ""))
+
+        menu.exec(self.irc_mode_btn.mapToGlobal(
+            self.irc_mode_btn.rect().bottomLeft()))
+
+    def _select_irc(self, mode: str, sub_mode: str):
+        """Apply selected IRC mode + sub-mode to engine and update UI."""
+        self.chain.maximizer.set_irc_mode(mode, sub_mode if sub_mode else None)
+        if sub_mode:
+            self.irc_mode_btn.setText(f"{mode} — {sub_mode}  ▾")
+            key = f"{mode} - {sub_mode}"
+        else:
+            display_name = IRC_MODES.get(mode, {}).get("name", mode)
+            self.irc_mode_btn.setText(f"{display_name}  ▾")
+            key = mode
+        desc = IRC_MODES.get(key, IRC_MODES.get(mode, {})).get("description", "")
+        self.irc_desc_label.setText(desc)
+        self._schedule_auto_measure()
+        print(f"[MAXIMIZER UI] IRC set: {mode} / {sub_mode}")
+
+    def _on_tone_clicked(self, index: int):
+        for i, btn in enumerate(self.tone_buttons):
+            btn.setChecked(i == index)
+        self._update_tone_button_styles()
+        tone_names = list(TONE_PRESETS.keys())
+        if 0 <= index < len(tone_names):
+            self.chain.maximizer.tone = tone_names[index]
+            self._schedule_auto_measure()
+
+    def _update_tone_button_styles(self):
+        for btn in self.tone_buttons:
+            if btn.isChecked():
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {C_TEAL}; border: none; border-radius: 10px;
+                        color: #FFFFFF; font-weight: bold; padding: 2px 6px;
+                        font-family: 'Menlo'; font-size: 8px; letter-spacing: 0.5px;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: #1A1A1E; border: 1px solid #2A2A30; border-radius: 10px;
+                        color: #6B6B70; padding: 2px 6px;
+                        font-family: 'Menlo'; font-size: 8px;
+                    }}
+                    QPushButton:hover {{ color: {C_TEAL}; border-color: {C_TEAL_DIM}; }}
+                """)
+
+    def _on_gain_changed(self, value: int):
+        """Gain dial changed (0-200 → 0.0-20.0 dB). Auto-measure triggered.
+
+        V5.5.1: Extended range from 12 dB → 20 dB for aggressive signal push.
+        GAIN knob does TWO things:
+        1. Sets chain.maximizer.gain_db for next offline render
+        2. Adjusts QAudioOutput volume for INSTANT perceptual feedback
+        """
+        gain_db = value / 10.0
+        self.chain.maximizer.set_gain(gain_db)
+        self.max_gain_display.setText(f"+{gain_db:.1f}")
+
+        # V5.5.1: Instant volume feedback via QAudioOutput
+        # Map 0-20 dB gain to 0.5-3.0 volume (perceptual approximation)
+        volume = min(3.0, 0.5 + gain_db / 20.0 * 2.5)
+        if hasattr(self, '_audio_output_master'):
+            self._audio_output_master.setVolume(volume)
+        if hasattr(self, '_audio_output_bypass'):
+            self._audio_output_bypass.setVolume(volume)
+
+        # Teal → Yellow → Orange → Red color based on gain push
+        if gain_db < 6.0:
+            color = C_TEAL_GLOW
+        elif gain_db < 12.0:
+            color = C_LED_YELLOW
+        elif gain_db < 16.0:
+            color = "#FF8C00"  # Orange
+        else:
+            color = C_LED_RED
+        self.max_gain_display.setStyleSheet(f"color: {color};")
+        self._schedule_auto_measure()
+
+    def _on_ceiling_changed(self, value: float):
+        self.chain.maximizer.set_ceiling(value)
+        self._schedule_auto_measure()
+
+    def _on_character_changed(self, value: int):
+        """Character slider changed (0-100 → 0.0-10.0)."""
+        char_val = value / 10.0
+        self.chain.maximizer.set_character(char_val)
+        self.max_char_val.setText(f"{char_val:.2f}")
+        self._schedule_auto_measure()
+
+    def _on_learn_gain(self):
+        """Run Learn Input Gain analysis (threaded)."""
+        audio_path = getattr(self, '_current_audio_path', None)
+        if not audio_path:
+            self.max_lufs_label.setText("NO FILE")
+            return
+
+        self.btn_learn_gain.setText("ANALYZING...")
+        self.btn_learn_gain.setEnabled(False)
+
+        def _do_learn():
+            suggested = self.chain.maximizer.learn_input_gain(audio_path)
+            lufs = self.chain.maximizer.get_learned_lufs()
+
+            def _update_ui():
+                self.btn_learn_gain.setText("LEARN INPUT GAIN")
+                self.btn_learn_gain.setEnabled(True)
+                if lufs is not None:
+                    self.max_lufs_label.setText(f"{lufs:.1f} LUFS")
+                if suggested is not None:
+                    self.max_gain_dial.setValue(int(suggested * 10))
+                    print(f"[MAXIMIZER UI] Learned: {lufs:.1f} LUFS → suggested gain +{suggested:.1f} dB")
+
+            QTimer.singleShot(0, _update_ui)
+
+        threading.Thread(target=_do_learn, daemon=True).start()
+
+    def _auto_learn_input_gain(self, audio_path: str):
+        """V5.5: Auto-analyze LUFS when audio is loaded (background thread).
+        Updates the LUFS label next to LEARN INPUT GAIN automatically.
+        Does NOT change the Gain dial — only shows the measured LUFS."""
+        def _analyze():
+            try:
+                import soundfile as sf_mod
+                import pyloudnorm as pyln_mod
+                data, sr = sf_mod.read(audio_path, dtype='float64')
+                if data.ndim == 1:
+                    data = np.column_stack([data, data])
+                meter = pyln_mod.Meter(sr)
+                lufs = meter.integrated_loudness(data)
+                if lufs == float('-inf') or lufs < -70:
+                    lufs = -70.0
+                self.chain.maximizer._learned_lufs = lufs
+
+                def _update():
+                    if hasattr(self, 'max_lufs_label'):
+                        self.max_lufs_label.setText(f"{lufs:.1f} LUFS")
+                        print(f"[MAXIMIZER] Auto-LUFS: {lufs:.1f} LUFS ({os.path.basename(audio_path)})")
+                QTimer.singleShot(0, _update)
+            except Exception as e:
+                print(f"[MAXIMIZER] Auto-LUFS error: {e}")
+                def _fallback():
+                    if hasattr(self, 'max_lufs_label'):
+                        self.max_lufs_label.setText("— LUFS")
+                QTimer.singleShot(0, _fallback)
+
+        threading.Thread(target=_analyze, daemon=True).start()
+
+    def _on_softclip_toggled(self, checked: bool):
+        self.chain.maximizer.set_soft_clip(checked, self.max_softclip_pct.value())
+        self._schedule_auto_measure()
+
+    def _on_softclip_pct_changed(self, value: int):
+        self.chain.maximizer.set_soft_clip(self.max_softclip_chk.isChecked(), value)
+        self._schedule_auto_measure()
+
+    def _on_transient_changed(self, value: int):
+        self.chain.maximizer.set_transient_emphasis(value, self.chain.maximizer.transient_band)
+        self._schedule_auto_measure()
+
+    def _on_transient_band(self, band: str):
+        for btn in self.max_band_btns:
+            btn.setChecked(btn.text() == band)
+        self._update_band_button_styles()
+        self.chain.maximizer.set_transient_emphasis(self.max_transient.value(), band)
+        self._schedule_auto_measure()
+
+    def _update_band_button_styles(self):
+        for btn in self.max_band_btns:
+            if btn.isChecked():
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {C_TEAL_DIM}; border: 1px solid {C_TEAL};
+                        border-radius: 3px; color: #FFFFFF; font-weight: bold; font-size: 9px;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: #1A1A1E; border: 1px solid #2A2A30;
+                        border-radius: 3px; color: #6B6B70; font-size: 9px;
+                    }}
+                    QPushButton:hover {{ color: {C_TEAL}; }}
+                """)
+
+    def _on_stereo_ind_changed(self):
+        self.chain.maximizer.set_stereo_independence(
+            self.max_si_transient.value(), self.max_si_sustain.value())
+        self._schedule_auto_measure()
+
+    def _run_auto_measure(self):
+        """Auto-measure triggered by parameter change (runs in background thread)."""
+        audio_path = getattr(self, '_current_audio_path', None)
+        if not audio_path:
+            return
+        # Avoid running multiple measures simultaneously
+        if getattr(self, '_measuring', False):
+            self._schedule_auto_measure()  # re-queue
+            return
+        self._measuring = True
+
+        def _do():
+            result = self.chain.maximizer.measure_levels(audio_path)
+
+            def _update_ui():
+                self._measuring = False
+                if result:
+                    self._apply_meter_result(result)
+            QTimer.singleShot(0, _update_ui)
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _apply_meter_result(self, result):
+        """Apply measurement results to the Ozone meter + GR display."""
+        l_peak = result.get("l_peak", result["peak_db"])
+        r_peak = result.get("r_peak", result["peak_db"])
+        l_rms = result.get("l_rms", result["rms_db"])
+        r_rms = result.get("r_rms", result["rms_db"])
+        peak = result["peak_db"]
+        gr = result["gain_reduction"]
+
+        # V5.5: Removed duplicate ozone_meter — levels shown in MetersPanel only
+
+        # Peak dB text with color
+        if peak > -1.0:
+            col = C_LED_RED
+        elif peak > -6.0:
+            col = C_LED_YELLOW
+        else:
+            col = C_TEAL_GLOW
+        self.max_meter_db.setStyleSheet(
+            f"color:{col}; font-family:'Menlo'; font-size:9px; font-weight:bold;")
+        self.max_meter_db.setText(f"{peak:.1f} dB")
+
+        # Gain reduction bar
+        gr_display = min(20.0, gr)
+        self.max_gr_bar.setValue(int(gr_display * 10))
+        self.max_gr_label.setText(f"-{gr_display:.1f} dB")
+
+        print(f"[MAXIMIZER UI] Measured: L={l_peak:.1f} R={r_peak:.1f} peak={peak:.1f}dB GR={gr:.1f}dB")
+
+    def _on_measure_levels(self):
+        """Manual measure button — same as auto but with button feedback."""
+        audio_path = getattr(self, '_current_audio_path', None)
+        if not audio_path:
+            self.max_meter_db.setText("NO FILE")
+            return
+
+        self.btn_measure.setText("⟳  MEASURING...")
+        self.btn_measure.setEnabled(False)
+
+        def _do_measure():
+            result = self.chain.maximizer.measure_levels(audio_path)
+
+            def _update_ui():
+                self.btn_measure.setText("⟳  MEASURE LEVELS")
+                self.btn_measure.setEnabled(True)
+                if result:
+                    self._apply_meter_result(result)
+                else:
+                    self.max_meter_db.setText("ERR")
+
+            QTimer.singleShot(0, _update_ui)
+
+        threading.Thread(target=_do_measure, daemon=True).start()
+
+    # ═══════════════════════════════════════════
+    #  Actions
+    # ═══════════════════════════════════════════
+
+    def set_audio(self, path: str):
+        """Set audio file to master (called from main app or browse)."""
+        if not path:
+            print("[MASTER PANEL] set_audio called with empty path")
+            self.file_label.setText("❌ No path provided")
+            self.file_label.setStyleSheet(f"color: #FF4444; font-size: 11px; font-weight: bold;")
+            return False
+
+        print(f"[MASTER PANEL] set_audio called with: {path}")
+        print(f"[MASTER PANEL] os.path.exists = {os.path.exists(path)}")
+
+        if not os.path.exists(path):
+            print(f"[MASTER PANEL] ❌ File not found: {path}")
+            self.file_label.setText(f"❌ NOT FOUND: {os.path.basename(path)}")
+            self.file_label.setStyleSheet(f"color: #FF4444; font-size: 11px; font-weight: bold;")
+            self.progress_text.setText(f"ERROR: File not found — use BROWSE button")
+            self.meters.set_status("FILE NOT FOUND", C_LED_RED)
+            return False
+
+        try:
+            load_result = self.chain.load_audio(path)
+            print(f"[MASTER PANEL] chain.load_audio result = {load_result}")
+
+            if load_result:
+                self._current_audio_path = path
+                self.file_label.setText(os.path.basename(path))
+                self.file_label.setStyleSheet(f"color: {C_AMBER}; font-size: 11px; font-weight: bold;")
+                self.progress_text.setText(f"LOADED: {os.path.basename(path)}")
+                self.meters.set_status("READY", C_LED_GREEN)
+                print(f"[MASTER PANEL] ✅ Audio loaded: {path}")
+
+                # V5.5: Auto-analyze LUFS on load (like Ozone 12 Learn Input Gain)
+                self._auto_learn_input_gain(path)
+
+                # V5.5.1: Transport bar removed — playback via Timeline Preview
+
+                return True
+            else:
+                print(f"[MASTER PANEL] ❌ chain.load_audio returned False for: {path}")
+                self.file_label.setText(f"❌ LOAD FAILED: {os.path.basename(path)}")
+                self.file_label.setStyleSheet(f"color: #FF4444; font-size: 11px; font-weight: bold;")
+                self.progress_text.setText(f"ERROR: Could not load audio — use BROWSE button")
+                self.meters.set_status("LOAD FAILED", C_LED_RED)
+                return False
+        except Exception as e:
+            print(f"[MASTER PANEL] ❌ Exception in set_audio: {e}")
+            import traceback
+            traceback.print_exc()
+            self.file_label.setText(f"❌ ERROR: {e}")
+            self.file_label.setStyleSheet(f"color: #FF4444; font-size: 11px; font-weight: bold;")
+            return False
+
+    def _on_browse_audio(self):
+        """Browse for audio file manually."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Audio File", "",
+            "Audio Files (*.wav *.mp3 *.flac *.aac *.m4a *.ogg);;All Files (*)"
+        )
+        if path:
+            self.set_audio(path)
+
+    def _on_analyze(self):
+        if not self.chain.input_path:
+            QMessageBox.warning(self, "No Audio", "Please load audio first")
+            return
+
+        self.btn_analyze.setEnabled(False)
+        self.progress_text.setText("ANALYZING...")
+        self.meters.set_status("ANALYZING...", C_LED_BLUE)
+
+        def _do():
+            try:
+                analysis = self.chain.loudness_meter.analyze(self.chain.input_path)
+                if analysis:
+                    self.chain.input_analysis = analysis
+                    self._call_on_main.emit(lambda a=analysis: self._on_analyze_done(a))
+                else:
+                    self._call_on_main.emit(lambda: self._on_analyze_done(None))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._call_on_main.emit(lambda: self._on_analyze_done(None))
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _on_analyze_done(self, analysis):
+        try:
+            self.btn_analyze.setEnabled(True)
+            if analysis and hasattr(analysis, 'integrated_lufs'):
+                self.meters.update_input(
+                    getattr(analysis, 'integrated_lufs', -24.0),
+                    getattr(analysis, 'true_peak_dbtp', -6.0),
+                    getattr(analysis, 'lra', 0.0),
+                )
+                self.progress_text.setText("ANALYSIS COMPLETE")
+                self.meters.set_status("ANALYZED", C_LED_GREEN)
+            else:
+                self.progress_text.setText("ANALYSIS FAILED")
+                self.meters.set_status("FAILED", C_LED_RED)
+        except Exception as e:
+            print(f"[MASTER UI] _on_analyze_done error: {e}")
+            self.progress_text.setText("ANALYSIS ERROR")
+            self.meters.set_status("ERROR", C_LED_RED)
+
+    def _on_preview(self):
+        if not self.chain.input_path:
+            QMessageBox.warning(self, "No Audio", "Please load audio first")
+            return
+
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self._set_buttons_enabled(False)
+
+        # V5.5: Start meter timer + switch to LIVE mode for rendering progress
+        self._start_meter_timer()
+        self.meters.set_status("⏳ RENDERING...", C_LED_BLUE)
+        if hasattr(self.meters, 'show_live_mode'):
+            self.meters.show_live_mode()
+
+        self.worker = MasterWorker(self.chain, "preview")
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_preview_done)
+        self.worker.error.connect(self._on_error)
+        self.worker.start()
+
+    def _on_render(self):
+        if not self.chain.input_path:
+            QMessageBox.warning(self, "No Audio", "Please load audio first")
+            return
+
+        # V5.5: Ask user to select output folder
+        default_dir = os.path.dirname(self.chain.input_path)
+        output_dir = QFileDialog.getExistingDirectory(
+            self, "Select Output Folder for Mastered File",
+            default_dir,
+            QFileDialog.Option.ShowDirsOnly
+        )
+        if not output_dir:
+            return  # User cancelled
+
+        # Set output path in chosen directory
+        base_name = os.path.splitext(os.path.basename(self.chain.input_path))[0]
+        self.chain.output_path = os.path.join(output_dir, f"{base_name}_mastered.wav")
+
+        reply = QMessageBox.question(
+            self, "Master & Export",
+            f"Master and export?\n\n"
+            f"File: {os.path.basename(self.chain.input_path)}\n"
+            f"Output: {self.chain.output_path}\n"
+            f"Platform: {self.chain.platform}\n"
+            f"Target: {self.chain.target_lufs} LUFS / {self.chain.target_tp} dBTP\n"
+            f"Intensity: {self.chain.intensity}%",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self._set_buttons_enabled(False)
+
+        # V5.5: Start meter timer + switch to LIVE mode for rendering progress
+        self._start_meter_timer()
+        self.meters.set_status("⏳ RENDERING...", C_LED_BLUE)
+        if hasattr(self.meters, 'show_live_mode'):
+            self.meters.show_live_mode()
+
+        self.worker = MasterWorker(self.chain, "render")
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_render_done)
+        self.worker.error.connect(self._on_error)
+        self.worker.start()
+
+    # V5.0 FIX: Removed orphaned _on_ai_assist(), _on_ai_done(), _on_ai_apply()
+    # These methods referenced UI elements (btn_ai_start, ai_results_frame, etc.)
+    # that were removed during refactor to one-button master flow.
+    # The new flow uses _on_one_button_master() instead.
+
+    def _on_ab_compare(self):
+        ab = self.chain.get_ab_comparison()
+        if not ab:
+            QMessageBox.information(self, "A/B Compare",
+                                    "Master audio first to compare Before/After")
+            return
+
+        msg = (
+            f"=== A/B COMPARISON ===\n\n"
+            f"                Before    >    After       Delta\n"
+            f"LUFS:       {ab['before']['lufs']:>7.1f}    >  {ab['after']['lufs']:>7.1f}    "
+            f"({ab['delta']['lufs']:+.1f})\n"
+            f"True Peak:  {ab['before']['true_peak']:>7.1f}    >  {ab['after']['true_peak']:>7.1f}    "
+            f"({ab['delta']['true_peak']:+.1f})\n"
+            f"LRA:        {ab['before']['lra']:>7.1f}    >  {ab['after']['lra']:>7.1f}    "
+            f"({ab['delta']['lra']:+.1f})"
+        )
+        QMessageBox.information(self, "A/B Comparison", msg)
+
+    def _on_progress(self, percent, status):
+        if percent >= 0:
+            self.progress_bar.setValue(percent)
+        self.progress_text.setText(status.upper())
+
+    def _on_preview_done(self, path):
+        # V5.5 FIX: Stop realtime meter timer after preview
+        self._stop_meter_timer()
+        self.progress_bar.setVisible(False)
+        self._set_buttons_enabled(True)
+        self.progress_text.setText(f"PREVIEW READY: {os.path.basename(path)}")
+        self.meters.set_status("PREVIEW OK", C_LED_GREEN)
+        # V5.2: Auto-load for playback
+        try:
+            self._load_preview_for_playback(path)
+        except Exception as pe:
+            print(f"[TRANSPORT] Preview load error (non-fatal): {pe}")
+
+    def _on_render_done(self, path):
+        # V5.4 FIX: Stop realtime meter timer
+        self._stop_meter_timer()
+
+        # V5.4: Handle batch mode — continue to next track
+        if self.batch_mode:
+            # Record success
+            result_entry = {
+                "path": path,
+                "success": True,
+                "lufs": getattr(self.chain.output_analysis, 'integrated_lufs', None) if self.chain.output_analysis else None,
+                "tp": getattr(self.chain.output_analysis, 'true_peak_dbtp', None) if self.chain.output_analysis else None,
+                "error": None,
+            }
+            self._batch_results.append(result_entry)
+            self.current_track_index += 1
+            self._batch_process_next()
+            return
+
+        self.progress_bar.setVisible(False)
+        self._set_buttons_enabled(True)
+        self.btn_ab.setEnabled(True)
+
+        if self.chain.output_analysis:
+            self.meters.update_output(
+                self.chain.output_analysis.integrated_lufs,
+                self.chain.output_analysis.true_peak_dbtp,
+                self.chain.output_analysis.lra,
+            )
+            self.progress_text.setText(
+                f"MASTERED: {self.chain.output_analysis.integrated_lufs:.1f} LUFS"
+            )
+        else:
+            self.progress_text.setText(f"MASTERED: {os.path.basename(path)}")
+
+        self.meters.set_status("COMPLETE", C_LED_GREEN)
+        self.master_complete.emit(path)
+
+        QMessageBox.information(self, "Mastering Complete",
+                                f"Master complete:\n{path}")
+
+    def _on_error(self, error_msg):
+        # V5.4 FIX: Stop realtime meter timer on error
+        self._stop_meter_timer()
+
+        # V5.4: Handle batch mode errors — record failure and continue
+        if self.batch_mode:
+            current_path = self.track_queue[self.current_track_index] if self.current_track_index < len(self.track_queue) else "unknown"
+            self._batch_results.append({
+                "path": current_path,
+                "success": False,
+                "lufs": None,
+                "tp": None,
+                "error": error_msg,
+            })
+            self.current_track_index += 1
+            self._batch_process_next()
+            return
+
+        self.progress_bar.setVisible(False)
+        self._set_buttons_enabled(True)
+        self.progress_text.setText(f"ERROR: {error_msg}")
+        self.meters.set_status("ERROR", C_LED_RED)
+        QMessageBox.critical(self, "Error", f"Error:\n{error_msg}")
+
+    def _set_buttons_enabled(self, enabled: bool):
+        self.btn_analyze.setEnabled(enabled)
+        self.btn_preview.setEnabled(enabled)
+        self.btn_render.setEnabled(enabled)
+        # V5.0 FIX: btn_ai_start was removed in refactor, use btn_master instead
+        if hasattr(self, 'btn_master'):
+            self.btn_master.setEnabled(enabled)
+
+    # ══════════════════════════════════════════════════
+    #  V5.2: Preview Playback + Bypass Methods
+    # ══════════════════════════════════════════════════
+    def _load_preview_for_playback(self, preview_path):
+        """Load mastered preview and original audio into players."""
+        try:
+            if not preview_path or not os.path.exists(preview_path):
+                print(f"[TRANSPORT] Preview path invalid: {preview_path}")
+                return
+
+            self._preview_path = preview_path
+            self._original_path = self.chain.input_path
+
+            # Stop any current playback
+            self._preview_player.stop()
+            self._bypass_player.stop()
+
+            # Load mastered preview
+            self._preview_player.setSource(QUrl.fromLocalFile(preview_path))
+
+            # Load original audio for bypass
+            if self._original_path and os.path.exists(self._original_path):
+                self._bypass_player.setSource(QUrl.fromLocalFile(self._original_path))
+            else:
+                print(f"[TRANSPORT] Original path not available for bypass")
+
+            self._is_preview_loaded = True
+            self._is_bypass_mode = False
+
+            # V5.5.1: Transport bar removed — no UI transport to update
+
+            print(f"[TRANSPORT] Preview loaded: {os.path.basename(preview_path)}")
+        except Exception as e:
+            print(f"[TRANSPORT] Load error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _get_active_player(self):
+        """Return the currently active QMediaPlayer (mastered or bypass)."""
+        return self._bypass_player if self._is_bypass_mode else self._preview_player
+
+    def _get_inactive_player(self):
+        """Return the inactive QMediaPlayer."""
+        return self._preview_player if self._is_bypass_mode else self._bypass_player
+
+    def _on_transport_play(self):
+        """Play pre-rendered preview via QMediaPlayer (Offline-Only architecture)."""
+        if not self._is_preview_loaded:
+            return
+        player = self._get_active_player()
+        inactive = self._get_inactive_player()
+        inactive.pause()
+        player.play()
+        self.meters.set_status("▶ PLAYING", C_LED_GREEN)
+
+    def _on_transport_pause(self):
+        """Pause playback."""
+        self._preview_player.pause()
+        self._bypass_player.pause()
+        self.meters.set_status("⏸ PAUSED", C_AMBER)
+
+    def _on_transport_stop(self):
+        """Stop playback and reset position."""
+        self._preview_player.stop()
+        self._bypass_player.stop()
+        self.meters.set_status("⏹ STOPPED", C_AMBER_DIM)
+
+    def _on_transport_seek(self, position_ms):
+        """Seek to position in QMediaPlayer."""
+        self._preview_player.setPosition(position_ms)
+        self._bypass_player.setPosition(position_ms)
+
+    def _on_transport_bypass(self, is_bypassed):
+        """Toggle between MASTERED and ORIGINAL audio (A/B Compare)."""
+        was_playing = (self._get_active_player().playbackState() ==
+                       QMediaPlayer.PlaybackState.PlayingState)
+        current_pos = self._get_active_player().position()
+        self._get_active_player().pause()
+        self._is_bypass_mode = is_bypassed
+        new_player = self._get_active_player()
+        new_player.setPosition(current_pos)
+        if was_playing:
+            new_player.play()
+        mode_str = "● ORIGINAL" if is_bypassed else "● MASTERED"
+        print(f"[TRANSPORT] Switched to {mode_str}")
+        self.meters.set_status(
+            "● ORIGINAL" if is_bypassed else "● MASTERED",
+            C_AMBER if is_bypassed else C_LED_GREEN)
+
+    def _on_player_position(self, position):
+        """Update from player position signal (V5.5.1: transport bar removed)."""
+        pass  # Transport bar removed — position tracking not needed in MasterPanel
+
+    def _on_player_duration(self, duration):
+        """Update from player duration (V5.5.1: transport bar removed)."""
+        pass  # Transport bar removed — duration tracking not needed in MasterPanel
+
+    def _on_player_status(self, status):
+        """Handle end of media and errors (V5.5.1: transport bar removed)."""
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self._preview_player.stop()
+            self._bypass_player.stop()
+            self.meters.set_status("⏹ ENDED", C_AMBER_DIM)
+
+    def keyPressEvent(self, event):
+        """V5.5.1: Transport bar removed — spacebar no longer controls preview here."""
+        super().keyPressEvent(event)
+
+    def _on_one_button_master(self):
+        """One-button master: analyze → recommend → apply → preview."""
+        if not self.chain.input_path:
+            QMessageBox.warning(self, "No Audio", "Please load audio first")
+            return
+
+        genre = self.ai_genre.currentText()
+        platform_names = list(PLATFORM_TARGETS.keys())
+        platform_idx = self.platform_combo_ai.currentIndex()
+        platform = platform_names[platform_idx] if 0 <= platform_idx < len(platform_names) else "YouTube"
+        intensity = self.ai_intensity.value()
+
+        # Disable button, show progress
+        self.btn_master.setEnabled(False)
+        self.btn_master.setText("⚡ MASTERING...")
+        self.master_progress.setVisible(True)
+        self.master_progress.setValue(0)
+        self.master_status.setText("ANALYZING AUDIO...")
+        self.master_status.setStyleSheet(f"color:{C_LED_BLUE}; font-size:11px; font-weight:bold;")
+
+        # Hide post-mastering controls during processing
+        self.post_master_frame.setVisible(False)
+        self.master_results_frame.setVisible(False)
+
+        def _do_master():
+            try:
+                # Step 1: Analyze + Recommend (30%)
+                self._call_on_main.emit(lambda: self._update_master_progress(10, "ANALYZING AUDIO..."))
+
+                rec = None
+                try:
+                    rec = self.chain.ai_recommend(genre, platform, intensity)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    self._call_on_main.emit(lambda msg=f"Analysis error: {e}": self._on_master_error(msg))
+                    return
+
+                if not rec:
+                    self._call_on_main.emit(lambda: self._on_master_error("Analysis failed — check audio file"))
+                    return
+
+                # Store recommendation for re-mastering
+                self._last_master_rec = rec
+
+                # Step 2: Apply recommendations (50%)
+                self._call_on_main.emit(lambda: self._update_master_progress(40, "APPLYING SETTINGS..."))
+                try:
+                    self.chain.apply_recommendation(rec)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    self._call_on_main.emit(lambda msg=f"Apply settings error: {e}": self._on_master_error(msg))
+                    return
+
+                # Step 3: Render 30s preview (100%)
+                self._call_on_main.emit(lambda: self._update_master_progress(60, "RENDERING PREVIEW..."))
+                preview_path = None
+                try:
+                    preview_path = self.chain.preview()
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    self._call_on_main.emit(lambda msg=f"Preview render error: {e}": self._on_master_error(msg))
+                    return
+
+                if not preview_path:
+                    self._call_on_main.emit(lambda: self._on_master_error("Preview render failed — check FFmpeg"))
+                    return
+
+                # V5.2 FIX: Analyze LUFS before/after so meters can display values
+                self._call_on_main.emit(lambda: self._update_master_progress(85, "ANALYZING LOUDNESS..."))
+                try:
+                    self.chain.input_analysis = self.chain.loudness_meter.analyze(self.chain.input_path)
+                    self.chain.output_analysis = self.chain.loudness_meter.analyze(preview_path)
+                    print(f"[MASTER] Input LUFS: {self.chain.input_analysis.integrated_lufs:.1f}" if self.chain.input_analysis else "[MASTER] Input analysis failed")
+                    print(f"[MASTER] Output LUFS: {self.chain.output_analysis.integrated_lufs:.1f}" if self.chain.output_analysis else "[MASTER] Output analysis failed")
+                except Exception as e:
+                    print(f"[MASTER] LUFS analysis error (non-fatal): {e}")
+
+                self._call_on_main.emit(lambda r=rec, p=preview_path: self._on_master_done(r, p))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._call_on_main.emit(lambda msg=str(e): self._on_master_error(msg))
+
+        threading.Thread(target=_do_master, daemon=True).start()
+
+    def _update_master_progress(self, percent, text):
+        """Update master progress bar and status."""
+        self.master_progress.setValue(percent)
+        self.master_status.setText(text)
+
+    def _on_master_done(self, rec, preview_path):
+        """Show results + reveal post-mastering controls."""
+        try:
+            # V5.1 FIX: Guard against widget deletion (thread callback race)
+            if not self.isVisible():
+                print("[MASTER UI] Widget not visible, skipping _on_master_done")
+                return
+
+            # V5.1 FIX: Guard against None rec
+            if rec is None:
+                self._on_master_error("Mastering returned no recommendation")
+                return
+
+            # Analyze output to get before/after LUFS — V5.1 FIX: safe attribute access
+            before_lufs = None
+            after_lufs = None
+            try:
+                if self.chain.input_analysis and hasattr(self.chain.input_analysis, 'integrated_lufs'):
+                    before_lufs = self.chain.input_analysis.integrated_lufs
+                if self.chain.output_analysis and hasattr(self.chain.output_analysis, 'integrated_lufs'):
+                    after_lufs = self.chain.output_analysis.integrated_lufs
+            except Exception:
+                pass
+
+            # Update results display
+            if before_lufs is not None:
+                self.master_lufs_before.setText(f"BEFORE: {before_lufs:.1f} LUFS")
+            if after_lufs is not None:
+                self.master_lufs_after.setText(f"AFTER: {after_lufs:.1f} LUFS")
+
+            confidence = rec.confidence if hasattr(rec, 'confidence') else 0
+            self.master_confidence.setText(f"CONFIDENCE: {confidence}% ✓ MEETS TARGET")
+
+            # V5.2: Update right-side Meters Panel with before/after LUFS
+            try:
+                if before_lufs is not None and hasattr(self, 'meters'):
+                    in_tp = getattr(self.chain.input_analysis, 'true_peak_dbtp', 0.0) if self.chain.input_analysis else 0.0
+                    in_lra = getattr(self.chain.input_analysis, 'lra', 0.0) if self.chain.input_analysis else 0.0
+                    self.meters.update_input(before_lufs, in_tp, in_lra)
+                if after_lufs is not None and hasattr(self, 'meters'):
+                    out_tp = getattr(self.chain.output_analysis, 'true_peak_dbtp', 0.0) if self.chain.output_analysis else 0.0
+                    out_lra = getattr(self.chain.output_analysis, 'lra', 0.0) if self.chain.output_analysis else 0.0
+                    self.meters.update_output(after_lufs, out_tp, out_lra)
+                    # Update gain delta
+                    if before_lufs is not None:
+                        delta = after_lufs - before_lufs
+                        sign = "+" if delta >= 0 else ""
+                        self.meters.gain_row[1].setText(f"{sign}{delta:.1f} dB")
+            except Exception as me:
+                print(f"[MASTER UI] Meters update error (non-fatal): {me}")
+
+            # Show results
+            self.master_results_frame.setVisible(True)
+
+            # Show post-mastering controls
+            self.post_master_frame.setVisible(True)
+
+            # Reset sliders
+            self.post_eq_slider.blockSignals(True)
+            self.post_eq_slider.setValue(100)
+            self.post_eq_slider.blockSignals(False)
+
+            self.post_dyn_slider.blockSignals(True)
+            self.post_dyn_slider.setValue(100)
+            self.post_dyn_slider.blockSignals(False)
+
+            self.post_width_slider.blockSignals(True)
+            self.post_width_slider.setValue(100)
+            self.post_width_slider.blockSignals(False)
+
+            self.post_ceiling_slider.blockSignals(True)
+            # V5.0 FIX: Safe index access to prevent IndexError
+            _pt_vals = list(PLATFORM_TARGETS.values())
+            _pt_idx = self.platform_combo_ai.currentIndex()
+            target_ceiling = _pt_vals[_pt_idx]['true_peak'] if 0 <= _pt_idx < len(_pt_vals) else -1.0
+            self.post_ceiling_slider.setValue(int(target_ceiling * 10))
+            self.post_ceiling_slider.blockSignals(False)
+
+            # Update status
+            self.master_progress.setVisible(False)
+            if after_lufs is not None:
+                self.master_status.setText(f"MASTERED: {after_lufs:.1f} LUFS")
+            else:
+                self.master_status.setText("MASTERED (LUFS pending)")
+            self.master_status.setStyleSheet(f"color:{C_LED_GREEN}; font-size:11px; font-weight:bold;")
+
+            # Re-enable master button
+            self.btn_master.setEnabled(True)
+            self.btn_master.setText("⚡  M A S T E R")
+
+            # V5.2: Auto-load preview for playback with bypass
+            try:
+                self._load_preview_for_playback(preview_path)
+            except Exception as pe:
+                print(f"[MASTER UI] Transport load error (non-fatal): {pe}")
+
+            # Update chain UI
+            self._sync_ui_from_chain()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[MASTER UI] _on_master_done error: {e}")
+            # Try to re-enable button even if error occurred
+            try:
+                self.btn_master.setEnabled(True)
+                self.btn_master.setText("⚡  M A S T E R")
+                self.master_progress.setVisible(False)
+                self.master_status.setText(f"ERROR: {e}")
+                self.master_status.setStyleSheet(f"color:{C_LED_RED}; font-size:11px; font-weight:bold;")
+            except Exception:
+                pass
+
+    def _on_master_error(self, msg):
+        """Show error state."""
+        try:
+            print(f"[MASTER UI] ERROR: {msg}")
+            if not self.isVisible():
+                return
+            self.master_progress.setVisible(False)
+            self.master_status.setText(f"ERROR: {msg}")
+            self.master_status.setStyleSheet(f"color:{C_LED_RED}; font-size:11px; font-weight:bold;")
+
+            self.btn_master.setEnabled(True)
+            self.btn_master.setText("⚡  M A S T E R")
+
+            QMessageBox.critical(self, "Mastering Error", f"Failed to complete mastering:\n{msg}")
+        except Exception as e:
+            print(f"[MASTER UI] _on_master_error display failed: {e}")
+
+    def _on_post_eq_changed(self, value: int):
+        """Post-EQ adjustment slider → scales EQ intensity in real-time."""
+        self.post_eq_label.setText(f"{value}%")
+        # Scale all EQ band gains by this percentage
+        scale = value / 100.0
+        for band in self.chain.equalizer.bands:
+            band._ui_scale = scale  # Store scale for chain to use
+
+    def _on_post_dyn_changed(self, value: int):
+        """Post-Dynamics adjustment slider → scales compression intensity."""
+        self.post_dyn_label.setText(f"{value}%")
+        self.chain.dynamics.post_scale = value / 100.0
+
+    def _on_post_width_changed(self, value: int):
+        """Post-Width adjustment slider → updates stereo width directly."""
+        self.post_width_label.setText(f"{value}%")
+        self.chain.imager.set_width(value)
+        # Also update the main width slider visually
+        self.img_width_slider.blockSignals(True)
+        self.img_width_slider.setValue(value)
+        self.img_width_slider.blockSignals(False)
+
+    def _on_post_ceiling_changed(self, value: int):
+        """Post-Ceiling adjustment slider → updates limiter ceiling directly."""
+        ceiling_db = value / 10.0
+        self.post_ceiling_label.setText(f"{ceiling_db:.1f} dB")
+        self.chain.maximizer.set_ceiling(ceiling_db)
+
+    def _on_remaster(self):
+        """Re-run mastering with adjusted settings from post-mastering sliders."""
+        if not hasattr(self, '_last_master_rec') or not self._last_master_rec:
+            QMessageBox.warning(self, "No Previous Master", "Please run master first")
+            return
+
+        self.btn_master.setEnabled(False)
+        self.btn_master.setText("⚡ RE-MASTERING...")
+        self.master_progress.setVisible(True)
+        self.master_progress.setValue(0)
+        self.master_status.setText("RE-APPLYING WITH ADJUSTMENTS...")
+        self.master_status.setStyleSheet(f"color:{C_LED_BLUE}; font-size:11px; font-weight:bold;")
+
+        # Get adjustment values
+        eq_amount = self.post_eq_slider.value() / 100.0
+        dyn_amount = self.post_dyn_slider.value() / 100.0
+        width_amount = self.post_width_slider.value() / 100.0
+        ceiling = self.post_ceiling_slider.value() / 10.0
+
+        def _do_remaster():
+            try:
+                # Apply adjustments to recommendation
+                rec = self._last_master_rec
+                if not rec:
+                    self._call_on_main.emit(lambda: self._on_master_error("No previous master recommendation found"))
+                    return
+
+                # Modify recommendation based on sliders
+                # EQ: scale the gain adjustments
+                if hasattr(self.chain, 'equalizer') and hasattr(self.chain.equalizer, 'bands'):
+                    for band in self.chain.equalizer.bands:
+                        band.gain *= eq_amount
+
+                # Dynamics: scale ratio/threshold — V5.1 FIX: safe nested access
+                if (hasattr(self.chain, 'dynamics') and
+                    hasattr(self.chain.dynamics, 'single_band') and
+                    self.chain.dynamics.single_band is not None):
+                    sb = self.chain.dynamics.single_band
+                    if hasattr(sb, 'ratio'):
+                        sb.ratio *= dyn_amount
+                    if hasattr(sb, 'threshold'):
+                        sb.threshold *= dyn_amount
+
+                # Imager: scale width
+                if hasattr(self.chain, 'imager') and hasattr(self.chain.imager, 'width'):
+                    self.chain.imager.width = int(100 + (self.chain.imager.width - 100) * width_amount)
+
+                # Maximizer: set ceiling
+                if hasattr(self.chain, 'maximizer') and hasattr(self.chain.maximizer, 'set_ceiling'):
+                    self.chain.maximizer.set_ceiling(ceiling)
+
+                self._call_on_main.emit(lambda: self._update_master_progress(50, "RENDERING PREVIEW..."))
+                preview_path = self.chain.preview()
+
+                self._call_on_main.emit(lambda r=rec, p=preview_path: self._on_master_done(r, p))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._call_on_main.emit(lambda msg=str(e): self._on_master_error(msg))
+
+        threading.Thread(target=_do_remaster, daemon=True).start()
+
+    def _on_render_full_from_master(self):
+        """Trigger full render from master assistant view."""
+        if not self.chain.input_path:
+            QMessageBox.warning(self, "No Audio", "Please load audio first")
+            return
+
+        # Use the standard render flow
+        self._on_render()
+
+    def _sync_ui_from_chain(self):
+        """Update all UI controls to match current chain settings."""
+        try:
+            # Intensity
+            self.intensity_slider.blockSignals(True)
+            self.intensity_slider.setValue(self.chain.intensity)
+            self.intensity_slider.blockSignals(False)
+            self.intensity_value.setText(f"{self.chain.intensity}%")
+
+            # IRC buttons — V5.0 FIX: safe index with try/except
+            irc_keys = list(IRC_MODES.keys())
+            try:
+                if self.chain.maximizer.irc_mode in irc_keys:
+                    idx = irc_keys.index(self.chain.maximizer.irc_mode)
+                    for i, btn in enumerate(self.irc_buttons):
+                        btn.setChecked(i == idx)
+                    self._update_irc_button_styles()
+                    self.irc_desc_label.setText(
+                        IRC_MODES[self.chain.maximizer.irc_mode].get("description", ""))
+            except (ValueError, IndexError):
+                pass
+
+            # Tone buttons — V5.0 FIX: safe index
+            tone_keys = list(TONE_PRESETS.keys())
+            try:
+                if self.chain.maximizer.tone in tone_keys:
+                    idx = tone_keys.index(self.chain.maximizer.tone)
+                    for i, btn in enumerate(self.tone_buttons):
+                        btn.setChecked(i == idx)
+                    self._update_tone_button_styles()
+            except (ValueError, IndexError):
+                pass
+
+            # Ceiling
+            self.max_ceiling.blockSignals(True)
+            self.max_ceiling.setValue(self.chain.maximizer.ceiling)
+            self.max_ceiling.blockSignals(False)
+            # max_ceiling_display removed in Ozone 12 redesign — spinbox is the display
+
+            # EQ bands
+            for i, band in enumerate(self.chain.equalizer.bands):
+                if i < len(self.eq_band_sliders):
+                    slider, label = self.eq_band_sliders[i]
+                    slider.blockSignals(True)
+                    slider.setValue(int(band.gain * 10))
+                    slider.blockSignals(False)
+                    label.setText(f"{band.gain:.1f}")
+
+            # Width
+            self.img_width_slider.blockSignals(True)
+            self.img_width_slider.setValue(self.chain.imager.width)
+            self.img_width_slider.blockSignals(False)
+            self.img_width_value.setText(f"{self.chain.imager.width}")
+
+            # Dynamics
+            band = self.chain.dynamics.single_band
+            for attr, spin in self.dyn_knobs.items():
+                spin.blockSignals(True)
+                spin.setValue(getattr(band, attr, spin.value()))
+                spin.blockSignals(False)
+        except Exception as e:
+            print(f"[MASTER UI] _sync_ui_from_chain error: {e}")
+
+    # ═══════════════════════════════════════════
+    #  V5.4 FIX: Realtime Meter System
+    # ═══════════════════════════════════════════
+
+    def _on_meter_data(self, levels: dict):
+        """
+        Receive real-time meter data from chain processing.
+
+        CRITICAL: Called from MasterWorker thread, NOT main GUI thread.
+        Uses thread-safe buffer — UI updates happen via QTimer on main thread.
+        """
+        with self._meter_lock:
+            self._meter_buffer.append(levels)
+            if len(self._meter_buffer) > self._meter_max_buffer_size:
+                self._meter_buffer = self._meter_buffer[-self._meter_keep_count:]
+
+    def _update_realtime_meters(self):
+        """Update UI with latest meter data (called by QTimer on main thread)."""
+        with self._meter_lock:
+            if not self._meter_buffer:
+                return
+            latest = self._meter_buffer[-1]
+            buf_size = len(self._meter_buffer)
+            self._meter_buffer.clear()
+
+        # V5.5: Removed duplicate ozone_meter — all levels shown in MetersPanel
+
+        # V5.4: Update LiveMeterPanel (right side dual-mode panel)
+        if hasattr(self, 'meters') and hasattr(self.meters, 'update_live_levels'):
+            self.meters.update_live_levels(latest)
+
+        # V5.5: Update Maximizer LUFS display from offline chain meter data
+        stage = latest.get("stage", "")
+
+        # Update LUFS from any stage (not just realtime)
+        lufs_int = latest.get("lufs_integrated")
+        if lufs_int is not None and lufs_int > -70 and hasattr(self, 'max_lufs_label'):
+            self.max_lufs_label.setText(f"{lufs_int:.1f} LUFS")
+
+        # Update GR bar from chain meter data
+        gr_db = abs(latest.get("gain_reduction_db", 0.0))
+        if hasattr(self, 'max_gr_bar') and gr_db > 0:
+            gr_display = min(20.0, gr_db)
+            self.max_gr_bar.setValue(int(gr_display * 10))
+            self.max_gr_label.setText(f"-{gr_display:.1f} dB")
+
+        # True Peak indicator color
+        if hasattr(self, 'max_meter_db'):
+            max_peak = max(latest.get("left_peak_db", -60),
+                           latest.get("right_peak_db", -60))
+            tp_over = latest.get("true_peak_over", False)
+            if tp_over or max_peak > -0.5:
+                col = C_LED_RED
+            elif max_peak > -1.0:
+                col = C_LED_YELLOW
+            else:
+                col = C_TEAL_GLOW
+            self.max_meter_db.setStyleSheet(
+                f"color:{col}; font-family:'Menlo'; font-size:9px; font-weight:bold;")
+            self.max_meter_db.setText(f"{max_peak:.1f} dBTP")
+
+        # Update stage indicator (bottom bar)
+        # V5.5: Removed "REAL-TIME DSP" — now Offline-Only architecture
+        stage_names = {
+            "post_eq": "EQ",
+            "post_dynamics": "DYNAMICS",
+            "post_imager": "IMAGER",
+            "post_maximizer": "MAXIMIZER",
+            "post_loudnorm": "LOUDNESS",
+            "final": "✓ READY",
+            "playback": "▶ PLAYING",
+            "rendering": "⏳ RENDERING...",
+        }
+        if stage in stage_names and hasattr(self, 'live_stage_label'):
+            self.live_stage_label.setText(f"STAGE: {stage_names[stage]}")
+
+    def _start_meter_timer(self):
+        """Start the meter update timer (for offline rendering progress)."""
+        if hasattr(self, '_meter_update_timer'):
+            self._meter_update_timer.start()
+        if hasattr(self, 'live_stage_label'):
+            self.live_stage_label.setText("STAGE: ⏳ RENDERING...")
+
+    def _stop_meter_timer(self):
+        """Stop the meter update timer."""
+        if hasattr(self, '_meter_update_timer'):
+            self._meter_update_timer.stop()
+        if hasattr(self, 'live_stage_label'):
+            self.live_stage_label.setText("STAGE: ✓ READY")
+
+    # ═══════════════════════════════════════════
+    #  V5.4 FIX: Batch Processing System
+    # ═══════════════════════════════════════════
+
+    def _on_batch_render(self):
+        """Start batch mastering all tracks in the playlist."""
+        # Try to get all tracks from parent GUI
+        all_tracks = []
+        parent = self.parent()
+        if parent and hasattr(parent, 'get_all_track_paths'):
+            all_tracks = parent.get_all_track_paths()
+        elif parent and hasattr(parent, 'track_list'):
+            # Fallback: try to read from track list widget
+            try:
+                for i in range(parent.track_list.count()):
+                    item = parent.track_list.item(i)
+                    if hasattr(item, 'data') and item.data(Qt.ItemDataRole.UserRole):
+                        all_tracks.append(item.data(Qt.ItemDataRole.UserRole))
+            except Exception:
+                pass
+
+        # If no tracks from parent, ask user to select files
+        if not all_tracks:
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Select Audio Files for Batch Mastering", "",
+                "Audio Files (*.wav *.mp3 *.flac *.aac *.m4a *.ogg);;All Files (*)"
+            )
+            if files:
+                all_tracks = files
+
+        if not all_tracks:
+            QMessageBox.warning(self, "Batch Master", "No tracks found. Please load tracks first.")
+            return
+
+        if len(all_tracks) < 1:
+            QMessageBox.warning(self, "Batch Master", "Need at least 1 track for batch mastering.")
+            return
+
+        # Ask for output directory
+        output_dir = QFileDialog.getExistingDirectory(
+            self, "Select Output Directory for Mastered Tracks", "")
+        if not output_dir:
+            return
+
+        # Confirm batch operation
+        reply = QMessageBox.question(
+            self, "Batch Master",
+            f"Master {len(all_tracks)} tracks?\n\n"
+            f"Output: {output_dir}\n"
+            f"Target: {self.chain.target_lufs} LUFS / {self.chain.target_tp} dBTP",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Initialize batch state
+        self.track_queue = all_tracks
+        self.current_track_index = 0
+        self.batch_mode = True
+        self.batch_output_dir = output_dir
+        self._batch_results = []
+
+        # Disable UI during batch
+        self._set_buttons_enabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        # Start processing first track
+        self._batch_process_next()
+
+    def _batch_process_next(self):
+        """Process the next track in the batch queue."""
+        if self.current_track_index >= len(self.track_queue):
+            self._batch_complete()
+            return
+
+        track_path = self.track_queue[self.current_track_index]
+        track_name = os.path.basename(track_path)
+        total = len(self.track_queue)
+        idx = self.current_track_index + 1
+
+        self.progress_text.setText(f"BATCH [{idx}/{total}]: {track_name}")
+        self.progress_bar.setValue(int((self.current_track_index / total) * 100))
+
+        # Load the track
+        try:
+            if not self.chain.load_audio(track_path):
+                self._batch_results.append({
+                    "path": track_path, "success": False,
+                    "lufs": None, "tp": None, "error": "Failed to load audio"
+                })
+                self.current_track_index += 1
+                self._batch_process_next()
+                return
+        except Exception as e:
+            self._batch_results.append({
+                "path": track_path, "success": False,
+                "lufs": None, "tp": None, "error": str(e)
+            })
+            self.current_track_index += 1
+            self._batch_process_next()
+            return
+
+        # Set output path
+        name, ext = os.path.splitext(track_name)
+        out_name = f"{name}_mastered{ext}"
+        self.chain.output_path = os.path.join(self.batch_output_dir, out_name)
+
+        # Start rendering
+        self._start_meter_timer()
+        self.meters.set_status("⏳ BATCH RENDERING...", C_LED_BLUE)
+
+        self.worker = MasterWorker(self.chain, "render")
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_render_done)
+        self.worker.error.connect(self._on_error)
+        self.worker.start()
+
+    def _batch_complete(self):
+        """Show batch completion summary."""
+        self.batch_mode = False
+        self._stop_meter_timer()
+        self.progress_bar.setVisible(False)
+        self._set_buttons_enabled(True)
+
+        total = len(self._batch_results)
+        success = sum(1 for r in self._batch_results if r["success"])
+        failed = total - success
+
+        # Build summary HTML
+        rows = ""
+        for r in self._batch_results:
+            name = os.path.basename(r["path"])
+            if r["success"]:
+                lufs_str = f"{r['lufs']:.1f}" if r['lufs'] is not None else "—"
+                tp_str = f"{r['tp']:.1f}" if r['tp'] is not None else "—"
+                rows += f"<tr><td>✅ {name}</td><td>{lufs_str} LUFS</td><td>{tp_str} dBTP</td></tr>"
+            else:
+                rows += f"<tr><td>❌ {name}</td><td colspan='2'>Error: {r['error']}</td></tr>"
+
+        html = (
+            f"<h3>Batch Mastering Complete</h3>"
+            f"<p><b>{success}/{total}</b> tracks mastered successfully"
+            f"{f', <span style=\"color:red\">{failed} failed</span>' if failed else ''}</p>"
+            f"<table border='1' cellpadding='4'>"
+            f"<tr><th>Track</th><th>LUFS</th><th>True Peak</th></tr>"
+            f"{rows}</table>"
+            f"<p>Output: {self.batch_output_dir}</p>"
+        )
+
+        self.progress_text.setText(f"BATCH DONE: {success}/{total} ✅")
+        self.meters.set_status("BATCH COMPLETE", C_LED_GREEN)
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Batch Mastering Complete")
+        msg_box.setTextFormat(Qt.TextFormat.RichText)
+        msg_box.setText(html)
+        msg_box.exec()
+
+    # ─── Helpers ──────────────────────────────
+    def _module_title(self, text: str):
+        lbl = QLabel(text)
+        lbl.setFont(QFont("Menlo", 13, QFont.Weight.Bold))
+        lbl.setStyleSheet(
+            f"color: {C_AMBER}; letter-spacing: 2px;")
+        return lbl
+
+    def _panel_label(self, text: str):
+        lbl = QLabel(text)
+        lbl.setStyleSheet(
+            f"font-size:9px; color:{C_GOLD}; letter-spacing:1.5px; font-weight:bold;")
+        return lbl
+
+    # ------------------------------------------------------------------
+    # V5.5: Close event — notify parent so Mini Meter can restore opacity
+    # ------------------------------------------------------------------
+    def closeEvent(self, event):
+        """Stop playback and emit master_closed signal when window closes."""
+        try:
+            self._preview_player.stop()
+            self._bypass_player.stop()
+            self._stop_meter_timer()
+        except Exception:
+            pass
+        self.master_closed.emit()
+        super().closeEvent(event)
