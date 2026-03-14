@@ -107,10 +107,106 @@ except ImportError:
     # Fallback: these will be available from the shim gui.py when it re-exports
     pass
 
+# ═══════════════════════════════════════════════════════════════════
+#  PHASE 2 INTEGRATION IMPORTS — Wire all Phase 1 modules into GUI
+# ═══════════════════════════════════════════════════════════════════
+
+# I-1: Undo/Redo
+try:
+    from gui.models.commands import CommandHistory
+    _HAS_UNDO = True
+except ImportError:
+    _HAS_UNDO = False
+
+# I-2: AutoSave
+try:
+    from gui.models.autosave import AutoSaveManager, project_to_dict, dict_to_project
+    _HAS_AUTOSAVE = True
+except ImportError:
+    _HAS_AUTOSAVE = False
+
+# I-3: Vintage Theme
+try:
+    from gui.styles_vintage import VintageTheme, get_theme, get_theme_names, apply_theme, THEMES
+    _HAS_VINTAGE_THEME = True
+except ImportError:
+    _HAS_VINTAGE_THEME = False
+
+# I-9: Multi-Track Timeline
+try:
+    from gui.timeline.multi_track_timeline import MultiTrackTimeline
+    _HAS_MULTI_TRACK = True
+except ImportError:
+    _HAS_MULTI_TRACK = False
+
+# I-10: Clip Drag/Trim/Split
+try:
+    from gui.timeline.clip_drag import ClipDragHandler
+    from gui.timeline.clip_trim import ClipTrimSplitHandler
+    _HAS_CLIP_TOOLS = True
+except ImportError:
+    _HAS_CLIP_TOOLS = False
+
+# I-11: Keyframe Editor
+try:
+    from gui.timeline.keyframe_editor import KeyframeEditor
+    _HAS_KEYFRAMES = True
+except ImportError:
+    _HAS_KEYFRAMES = False
+
+# I-12: Text Overlay
+try:
+    from gui.timeline.text_layer import TextClip, TextAnimation, TextPropertiesPanel
+    _HAS_TEXT_OVERLAY = True
+except ImportError:
+    _HAS_TEXT_OVERLAY = False
+
+# I-13: Transitions
+try:
+    from gui.models.transitions import TransitionType, TransitionLibraryPanel
+    _HAS_TRANSITIONS = True
+except ImportError:
+    _HAS_TRANSITIONS = False
+
+# I-14: Effects
+try:
+    from gui.models.effects import EffectType, EffectsPanel
+    _HAS_EFFECTS = True
+except ImportError:
+    _HAS_EFFECTS = False
+
+# I-15: Speed Ramp
+try:
+    from gui.timeline.speed_ramp import SpeedCurveEditor, SpeedRamp
+    _HAS_SPEED_RAMP = True
+except ImportError:
+    _HAS_SPEED_RAMP = False
+
+# I-16: Export Presets
+try:
+    from gui.models.export_presets import ExportPresetPanel
+    _HAS_EXPORT_PRESETS = True
+except ImportError:
+    _HAS_EXPORT_PRESETS = False
+
+# I-18: GPU Preview
+try:
+    from gui.video.gpu_preview import GPUPreviewCompositor, FrameCache, GPUPreviewWidget
+    _HAS_GPU_PREVIEW = True
+except ImportError:
+    _HAS_GPU_PREVIEW = False
+
+# I-5: WLM Plus Meter (new version)
+try:
+    from gui.widgets.wlm_meter import WavesWLMPlusMeter
+    _HAS_WLM_PLUS = True
+except ImportError:
+    _HAS_WLM_PLUS = False
+
 
 class LongPlayStudioV4(QMainWindow):
     """Main application window"""
-    
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LongPlay Studio V5.0 - AI DJ + YouTube Generator + Hook Extractor + Video Prompt + AI Master")
@@ -143,16 +239,79 @@ class LongPlayStudioV4(QMainWindow):
         self.tracks_per_video = 4  # default
         
         self.current_audio_index = 0
-        
+
+        # ── Phase 2: I-1 Undo/Redo ──
+        self.undo_manager = None
+        if _HAS_UNDO:
+            self.undo_manager = CommandHistory(on_change=self._on_undo_change)
+            print("[PHASE2] Undo/Redo system initialized")
+
+        # ── Phase 2: I-2 AutoSave ──
+        self.auto_save = None
+        if _HAS_AUTOSAVE:
+            self.auto_save = AutoSaveManager()
+            self.auto_save.set_save_callback(lambda p: print(f"[AUTOSAVE] Saved: {p}"))
+            print("[PHASE2] AutoSave system initialized")
+
         self._setup_ui()
         self._setup_shortcuts()
         self._connect_signals()
+
+        # ── Phase 2: I-3 Apply Vintage Theme ──
+        if _HAS_VINTAGE_THEME:
+            try:
+                theme_cls = get_theme("classic_dark")
+                app = QApplication.instance()
+                if app:
+                    app.setStyleSheet(theme_cls.get_global_stylesheet())
+                    print(f"[PHASE2] Applied theme: {theme_cls.name}")
+            except Exception as e:
+                print(f"[PHASE2] Theme error: {e}")
+
+        # ── Phase 2: I-2 Start AutoSave + Check Recovery ──
+        if self.auto_save:
+            if self.auto_save.has_recovery():
+                info = self.auto_save.get_recovery_info()
+                if info:
+                    reply = QMessageBox.question(
+                        self, "Recover Project",
+                        f"Found auto-save from {info.get('saved_at', 'unknown')}.\n"
+                        f"Tracks: {info.get('tracks', 0)}\n\nRestore?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    )
+                    if reply == QMessageBox.StandardButton.Yes:
+                        recovered = self.auto_save.recover()
+                        if recovered:
+                            print(f"[AUTOSAVE] Recovered project with {len(recovered.tracks)} tracks")
+            self.auto_save.start()
         
+    def _on_undo_change(self) -> None:
+        """Callback when undo/redo stack changes — update status bar."""
+        if self.undo_manager:
+            stack = self.undo_manager._undo_stack
+            label = stack[-1].description if stack else "—"
+            self.statusBar().showMessage(f"Last action: {label}", 3000)
+
+    def closeEvent(self, event) -> None:
+        """Clean up on app close."""
+        # I-2: Stop auto-save
+        if self.auto_save:
+            self.auto_save.stop()
+        super().closeEvent(event)
+
     def _setup_shortcuts(self):
         """Setup keyboard shortcuts"""
         # Spacebar = Play/Pause
         space_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
         space_shortcut.activated.connect(self._toggle_playback)
+
+        # I-1: Undo (Ctrl+Z / Cmd+Z)
+        if _HAS_UNDO and self.undo_manager:
+            undo_sc = QShortcut(QKeySequence("Ctrl+Z"), self)
+            undo_sc.activated.connect(lambda: self.undo_manager.undo())
+            redo_sc = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+            redo_sc.activated.connect(lambda: self.undo_manager.redo())
+            print("[PHASE2] Undo/Redo shortcuts registered (Ctrl+Z / Ctrl+Shift+Z)")
         
         # Command+ = Zoom In
         zoom_in_shortcut = QShortcut(QKeySequence("Ctrl+="), self)
@@ -965,11 +1124,27 @@ class LongPlayStudioV4(QMainWindow):
         time_layout.addStretch()
         timeline_section.addWidget(time_widget)
         
-        # CapCut Timeline
-        self.timeline = CapCutTimeline()
+        # ── Phase 2: I-9 Multi-Track Timeline (replaces CapCutTimeline) ──
+        if _HAS_MULTI_TRACK:
+            self.timeline = MultiTrackTimeline()
+            self.timeline.setMinimumHeight(180)
+            print("[PHASE2] Multi-track timeline loaded (Video/Audio/Text/Effects)")
+        else:
+            self.timeline = CapCutTimeline()
+            print("[PHASE2] Fallback: using CapCutTimeline")
         self.timeline.setMinimumHeight(150)
-        self.timeline.seekRequested.connect(self._on_seek)
+        if hasattr(self.timeline, 'seekRequested'):
+            self.timeline.seekRequested.connect(self._on_seek)
         timeline_section.addWidget(self.timeline)
+
+        # ── Phase 2: I-10 Wire clip drag/trim/split handlers ──
+        if _HAS_CLIP_TOOLS and _HAS_MULTI_TRACK and hasattr(self.timeline, '_scene'):
+            try:
+                self._clip_drag_handler = ClipDragHandler(self.timeline._scene)
+                self._clip_trim_handler = ClipTrimSplitHandler(self.timeline._scene)
+                print("[PHASE2] Clip drag/trim/split handlers attached")
+            except Exception as e:
+                print(f"[PHASE2] Clip tools init warning: {e}")
 
         # V5.5: Timeline Transport Bar — Play/Stop controls under timeline
         transport_bar = QWidget()
@@ -1021,7 +1196,61 @@ class LongPlayStudioV4(QMainWindow):
         self.tl_stop_btn.clicked.connect(lambda: self.audio_player.stop())
         transport_layout.addWidget(self.tl_stop_btn)
 
+        # ── Phase 2: I-1 Undo/Redo buttons ──
+        if _HAS_UNDO and self.undo_manager:
+            _tb_style = (f"QPushButton {{ background: {Colors.BG_TERTIARY}; color: {Colors.TEXT_SECONDARY}; "
+                         f"border: 1px solid {Colors.BORDER}; border-radius: 4px; padding: 4px 10px; "
+                         f"font-size: 11px; font-weight: bold; }} "
+                         f"QPushButton:hover {{ background: {Colors.BORDER}; color: {Colors.TEXT_PRIMARY}; }}")
+            undo_btn = QPushButton("↩ Undo")
+            undo_btn.setStyleSheet(_tb_style)
+            undo_btn.setFixedWidth(80)
+            undo_btn.clicked.connect(lambda: self.undo_manager.undo())
+            transport_layout.addWidget(undo_btn)
+            redo_btn = QPushButton("↪ Redo")
+            redo_btn.setStyleSheet(_tb_style)
+            redo_btn.setFixedWidth(80)
+            redo_btn.clicked.connect(lambda: self.undo_manager.redo())
+            transport_layout.addWidget(redo_btn)
+
+        # ── Phase 2: I-10 Razor tool button ──
+        if _HAS_CLIP_TOOLS:
+            razor_btn = QPushButton("✂ Razor")
+            razor_btn.setStyleSheet(_tb_style if _HAS_UNDO else (
+                f"QPushButton {{ background: {Colors.BG_TERTIARY}; color: {Colors.TEXT_SECONDARY}; "
+                f"border: 1px solid {Colors.BORDER}; border-radius: 4px; padding: 4px 10px; "
+                f"font-size: 11px; font-weight: bold; }}"))
+            razor_btn.setFixedWidth(80)
+            razor_btn.setCheckable(True)
+            razor_btn.setToolTip("Toggle razor tool — click on clip to split")
+            transport_layout.addWidget(razor_btn)
+            self._razor_btn = razor_btn
+
+        # ── Phase 2: I-12 Text tool button ──
+        if _HAS_TEXT_OVERLAY:
+            text_btn = QPushButton("T Text")
+            text_btn.setStyleSheet(f"QPushButton {{ background: {Colors.BG_TERTIARY}; color: {Colors.TEXT_SECONDARY}; "
+                                   f"border: 1px solid {Colors.BORDER}; border-radius: 4px; padding: 4px 10px; "
+                                   f"font-size: 11px; font-weight: bold; }} "
+                                   f"QPushButton:hover {{ background: {Colors.BORDER}; color: {Colors.TEXT_PRIMARY}; }}")
+            text_btn.setFixedWidth(70)
+            text_btn.setToolTip("Add text overlay to timeline")
+            text_btn.clicked.connect(self._on_add_text_clip)
+            transport_layout.addWidget(text_btn)
+
         transport_layout.addStretch()
+
+        # ── Phase 2: I-3 Theme selector ──
+        if _HAS_VINTAGE_THEME:
+            theme_combo = QComboBox()
+            theme_combo.addItems(list(THEMES.keys()))
+            theme_combo.setCurrentText("classic_dark")
+            theme_combo.setFixedWidth(120)
+            theme_combo.setStyleSheet(f"QComboBox {{ background: {Colors.BG_TERTIARY}; color: {Colors.TEXT_SECONDARY}; "
+                                      f"border: 1px solid {Colors.BORDER}; border-radius: 3px; padding: 3px; font-size: 10px; }}")
+            theme_combo.currentTextChanged.connect(self._on_theme_changed)
+            theme_combo.setToolTip("Switch UI theme")
+            transport_layout.addWidget(theme_combo)
 
         self.tl_position_label = QLabel("00:00 / 00:00")
         self.tl_position_label.setStyleSheet(
@@ -1030,6 +1259,14 @@ class LongPlayStudioV4(QMainWindow):
         transport_layout.addWidget(self.tl_position_label)
 
         timeline_section.addWidget(transport_bar)
+
+        # ── Phase 2: I-11 Keyframe editor panel (below timeline) ──
+        if _HAS_KEYFRAMES:
+            self.keyframe_editor = KeyframeEditor()
+            self.keyframe_editor.setMaximumHeight(150)
+            self.keyframe_editor.setVisible(False)  # toggle on clip select
+            timeline_section.addWidget(self.keyframe_editor)
+            print("[PHASE2] Keyframe editor panel added below timeline")
 
         timeline_layout.addWidget(timeline_section)
         self.center_splitter.addWidget(timeline_container)
@@ -1405,6 +1642,30 @@ class LongPlayStudioV4(QMainWindow):
 
         # V5.5.1: Master buttons removed — Maximizer on right panel replaces Master Module
 
+        # ── Phase 2: I-13 Transitions Panel ──
+        if _HAS_TRANSITIONS:
+            trans_section = CollapsibleSection("Transitions", "⬡")
+            self.transitions_panel = TransitionLibraryPanel()
+            trans_section.addWidget(self.transitions_panel)
+            layout.addWidget(trans_section)
+            print("[PHASE2] Transitions panel added (12+ types)")
+
+        # ── Phase 2: I-14 Effects Panel ──
+        if _HAS_EFFECTS:
+            fx_section = CollapsibleSection("Effects", "✦")
+            self.effects_panel = EffectsPanel()
+            fx_section.addWidget(self.effects_panel)
+            layout.addWidget(fx_section)
+            print("[PHASE2] Effects panel added (10+ types)")
+
+        # ── Phase 2: I-16 Export Presets Panel ──
+        if _HAS_EXPORT_PRESETS:
+            export_section = CollapsibleSection("Export Presets", "📦")
+            self.export_preset_panel = ExportPresetPanel()
+            export_section.addWidget(self.export_preset_panel)
+            layout.addWidget(export_section)
+            print("[PHASE2] Export presets panel added")
+
         layout.addStretch()
         parent_scroll.setWidget(panel)
         
@@ -1417,6 +1678,76 @@ class LongPlayStudioV4(QMainWindow):
         # V5.5: Load audio into analysis engine when track changes
         self.audio_player.track_changed.connect(self._on_track_changed_for_meter)
         
+    # ═══════════════════════════════════════════════════════════════
+    #  PHASE 2 INTEGRATION METHODS
+    # ═══════════════════════════════════════════════════════════════
+
+    def _on_theme_changed(self, theme_key: str) -> None:
+        """I-3: Switch UI theme."""
+        if not _HAS_VINTAGE_THEME:
+            return
+        try:
+            app = QApplication.instance()
+            if app:
+                apply_theme(app, theme_key)
+                print(f"[PHASE2] Theme changed to: {theme_key}")
+        except Exception as e:
+            print(f"[PHASE2] Theme change error: {e}")
+
+    def _on_add_text_clip(self) -> None:
+        """I-12: Add a text clip to the text track on the timeline."""
+        if not _HAS_TEXT_OVERLAY:
+            return
+        try:
+            clip = TextClip(
+                text="Title",
+                font_family="Inter",
+                font_size=48,
+                color="#FFFFFF",
+                animation=TextAnimation.FADE_IN,
+                start_time=0.0,
+                duration=5.0,
+            )
+            # If multi-track timeline, add to text track
+            if _HAS_MULTI_TRACK and hasattr(self.timeline, '_project'):
+                from gui.models.track import Track, TrackType, Clip
+                project = self.timeline._project
+                # find or create text track
+                text_track = None
+                for t in project.tracks:
+                    if t.type == TrackType.TEXT:
+                        text_track = t
+                        break
+                if text_track is None:
+                    text_track = Track(name="Text", type=TrackType.TEXT)
+                    project.add_track(text_track)
+                tc = Clip(start_time=clip.start_time, duration=clip.duration,
+                          name=clip.text, properties={"text_clip": True, "font": clip.font_family,
+                                                       "font_size": clip.font_size, "color": clip.color})
+                text_track.add_clip(tc)
+                if hasattr(self.timeline, 'refresh'):
+                    self.timeline.refresh()
+                print(f"[PHASE2] Text clip added: '{clip.text}'")
+
+            # Show text properties panel if available
+            if hasattr(self, 'keyframe_editor') and _HAS_TEXT_OVERLAY:
+                # toggle keyframe editor to show text properties
+                pass
+        except Exception as e:
+            print(f"[PHASE2] Add text clip error: {e}")
+
+    def _on_speed_ramp(self) -> None:
+        """I-15: Open speed ramp editor for selected clip."""
+        if not _HAS_SPEED_RAMP:
+            return
+        try:
+            editor = SpeedCurveEditor()
+            editor.setWindowTitle("Speed Ramp Editor")
+            editor.show()
+            print("[PHASE2] Speed ramp editor opened")
+        except Exception as e:
+            print(f"[PHASE2] Speed ramp error: {e}")
+
     def _on_position_changed(self, position_ms: int):
         """Handle playback position change"""
         try:

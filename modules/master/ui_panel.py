@@ -69,6 +69,52 @@ from .equalizer import EQ_TONE_PRESETS
 from .dynamics import DYNAMICS_PRESETS
 from .imager import IMAGER_PRESETS
 
+# ═══════════════════════════════════════════════════════════════════
+#  PHASE 2 INTEGRATION IMPORTS — Wire mastering modules into panel
+# ═══════════════════════════════════════════════════════════════════
+
+# I-4: Spectrum Analyzer
+try:
+    from gui.widgets.spectrum_analyzer import SpectrumAnalyzerWidget
+    _HAS_SPECTRUM = True
+except ImportError:
+    _HAS_SPECTRUM = False
+
+# I-5: WLM Plus Meter
+try:
+    from gui.widgets.wlm_meter import WavesWLMPlusMeter
+    _HAS_WLM_PLUS = True
+except ImportError:
+    _HAS_WLM_PLUS = False
+
+# I-6: Match EQ
+try:
+    from .match_eq import MatchEQ
+    _HAS_MATCH_EQ = True
+except ImportError:
+    _HAS_MATCH_EQ = False
+
+# I-7: A/B Comparison
+try:
+    from .ab_compare import ABComparison
+    _HAS_AB_COMPARE = True
+except ImportError:
+    _HAS_AB_COMPARE = False
+
+# I-8: Loudness Report
+try:
+    from .loudness_report import export_csv, export_pdf, LoudnessReportData
+    _HAS_LOUDNESS_REPORT = True
+except ImportError:
+    _HAS_LOUDNESS_REPORT = False
+
+# I-17: Real-time Monitor
+try:
+    from .realtime_monitor import RealtimeMonitor, MeterData
+    _HAS_RT_MONITOR = True
+except ImportError:
+    _HAS_RT_MONITOR = False
+
 
 # ══════════════════════════════════════════════════
 #  WAVES-INSPIRED PRO AUDIO PLUGIN DESIGN SYSTEM
@@ -3467,6 +3513,130 @@ class MasterPanel(QWidget):
         # V5.5 REMOVED: RT position timer (no RT engine anymore)
         # Position tracking now via QMediaPlayer.positionChanged signal
 
+        # ═══ Phase 2 Integration Init ═══
+
+        # I-4: Spectrum Analyzer
+        self._spectrum_analyzer = None
+        if _HAS_SPECTRUM:
+            self._spectrum_analyzer = SpectrumAnalyzerWidget()
+            print("[PHASE2] Spectrum analyzer initialized")
+
+        # I-6: Match EQ
+        self._match_eq = None
+        if _HAS_MATCH_EQ:
+            self._match_eq = MatchEQ(ffmpeg_path=ffmpeg_path)
+            print("[PHASE2] Match EQ initialized")
+
+        # I-7: A/B Comparison
+        self._ab_compare = None
+        if _HAS_AB_COMPARE:
+            self._ab_compare = ABComparison()
+            self._ab_compare.set_toggle_callback(self._on_ab_state_changed)
+            print("[PHASE2] A/B comparison initialized")
+
+        # I-17: Real-time Monitor
+        self._rt_monitor = None
+        if _HAS_RT_MONITOR:
+            self._rt_monitor = RealtimeMonitor(ffmpeg_path=ffmpeg_path)
+            print(f"[PHASE2] Real-time monitor initialized (backend: {self._rt_monitor.backend})")
+
+    def _on_ab_state_changed(self, is_state_a: bool) -> None:
+        """I-7: Handle A/B toggle state change."""
+        label = "MASTERED" if is_state_a else "ORIGINAL"
+        if hasattr(self, '_ab_label'):
+            self._ab_label.setText(label)
+        if not is_state_a:
+            # bypass — play original
+            if hasattr(self, '_bypass_player') and self._original_path:
+                pos = self._preview_player.position()
+                self._preview_player.pause()
+                self._bypass_player.setPosition(pos)
+                self._bypass_player.play()
+        else:
+            # processed
+            if hasattr(self, '_preview_player'):
+                pos = self._bypass_player.position() if hasattr(self, '_bypass_player') else 0
+                self._bypass_player.pause()
+                self._preview_player.setPosition(pos)
+                self._preview_player.play()
+
+    def _on_export_loudness_report(self) -> None:
+        """I-8: Export loudness report as CSV or PDF."""
+        if not _HAS_LOUDNESS_REPORT:
+            return
+        try:
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Export Loudness Report", "",
+                "CSV Files (*.csv);;PDF Files (*.pdf);;All Files (*)"
+            )
+            if not path:
+                return
+
+            from .loudness import LoudnessAnalysis
+            analysis = LoudnessAnalysis()
+            if hasattr(self, 'meters') and hasattr(self.meters, 'wlm'):
+                # pull data from WLM meter if available
+                pass
+            analysis.integrated_lufs = getattr(self, '_last_lufs', -14.0)
+            analysis.true_peak_dbtp = getattr(self, '_last_tp', -1.0)
+
+            report = LoudnessReportData.from_analysis(
+                analysis,
+                file_path=self._current_audio_path or "",
+                platform=self.platform_combo.currentText() if hasattr(self, 'platform_combo') else "YouTube",
+            )
+
+            if path.lower().endswith('.pdf'):
+                ok = export_pdf(report, path)
+            else:
+                ok = export_csv(report, path)
+
+            if ok:
+                QMessageBox.information(self, "Report Exported", f"Saved to:\n{path}")
+            else:
+                QMessageBox.warning(self, "Export Failed", "Could not export report.")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Export error: {e}")
+
+    def _on_match_eq_load_ref(self) -> None:
+        """I-6: Load reference track for Match EQ."""
+        if not self._match_eq:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Reference Audio", "",
+            "Audio Files (*.wav *.mp3 *.flac *.ogg *.m4a);;All Files (*)"
+        )
+        if path:
+            ok = self._match_eq.load_reference(path)
+            if ok:
+                print(f"[PHASE2] Match EQ reference loaded: {os.path.basename(path)}")
+                if hasattr(self, '_match_eq_ref_label'):
+                    self._match_eq_ref_label.setText(f"Ref: {os.path.basename(path)}")
+
+    def _on_match_eq_apply(self) -> None:
+        """I-6: Apply Match EQ correction to the chain EQ."""
+        if not self._match_eq:
+            return
+        if self._current_audio_path:
+            self._match_eq.analyze_current(self._current_audio_path)
+        ok = self._match_eq.apply_to_equalizer(self.chain.equalizer)
+        if ok:
+            print("[PHASE2] Match EQ correction applied to EQ bands")
+            QMessageBox.information(self, "Match EQ", "Correction applied to EQ bands.")
+
+    def _on_monitor_toggle(self, checked: bool) -> None:
+        """I-17: Toggle real-time monitoring."""
+        if not self._rt_monitor:
+            return
+        if checked:
+            if self._current_audio_path:
+                self._rt_monitor.load_audio(self._current_audio_path)
+                self._rt_monitor.play()
+                print("[PHASE2] Real-time monitor: ON")
+        else:
+            self._rt_monitor.stop()
+            print("[PHASE2] Real-time monitor: OFF")
+
     def _setup_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -3682,6 +3852,22 @@ class MasterPanel(QWidget):
         self.eq_curve.setMinimumHeight(200)
         self.eq_curve.bandChanged.connect(self._on_eq_curve_band_changed)
         layout.addWidget(self.eq_curve)
+
+        # ── Phase 2: I-4 Spectrum Analyzer overlay on EQ ──
+        if _HAS_SPECTRUM and self._spectrum_analyzer:
+            self._spectrum_analyzer.setMinimumHeight(180)
+            layout.addWidget(self._spectrum_analyzer)
+            # Pre/Post toggle
+            spectrum_bar = QHBoxLayout()
+            pre_post_btn = QPushButton("Pre/Post EQ")
+            pre_post_btn.setStyleSheet(
+                f"QPushButton {{ background: {C_PANEL_INSET}; color: {C_TEAL}; "
+                f"border: 1px solid {C_GROOVE}; padding: 3px 10px; font-size: 9px; border-radius: 3px; }}")
+            pre_post_btn.clicked.connect(lambda: self._spectrum_analyzer.toggle_pre_post())
+            spectrum_bar.addWidget(pre_post_btn)
+            spectrum_bar.addStretch()
+            layout.addLayout(spectrum_bar)
+            print("[PHASE2] Spectrum analyzer overlaid on EQ section")
 
         # Band sliders (below the curve)
         bands_group = QGroupBox("EQ BANDS")
@@ -4590,6 +4776,44 @@ class MasterPanel(QWidget):
         self.btn_batch_render.clicked.connect(self._on_batch_render)
         layout.addWidget(self.btn_batch_render)
 
+        # ── Phase 2: I-7 A/B Toggle with label ──
+        if _HAS_AB_COMPARE and self._ab_compare:
+            self._ab_label = QLabel("MASTERED")
+            self._ab_label.setStyleSheet(f"color: {C_TEAL}; font-size: 10px; font-weight: bold;")
+            layout.addWidget(self._ab_label)
+
+        # ── Phase 2: I-8 Export Report button ──
+        if _HAS_LOUDNESS_REPORT:
+            btn_report = QPushButton("REPORT")
+            btn_report.setStyleSheet(BTN_SECONDARY_STYLE)
+            btn_report.setToolTip("Export loudness report (CSV/PDF)")
+            btn_report.clicked.connect(self._on_export_loudness_report)
+            layout.addWidget(btn_report)
+
+        # ── Phase 2: I-6 Match EQ buttons ──
+        if _HAS_MATCH_EQ and self._match_eq:
+            btn_match_ref = QPushButton("MATCH REF")
+            btn_match_ref.setStyleSheet(BTN_SECONDARY_STYLE)
+            btn_match_ref.setToolTip("Load reference track for Match EQ")
+            btn_match_ref.clicked.connect(self._on_match_eq_load_ref)
+            layout.addWidget(btn_match_ref)
+            self._match_eq_ref_label = QLabel("Ref: —")
+            self._match_eq_ref_label.setStyleSheet(f"color: {C_CREAM_DIM}; font-size: 9px;")
+            layout.addWidget(self._match_eq_ref_label)
+            btn_match_apply = QPushButton("APPLY MATCH")
+            btn_match_apply.setStyleSheet(BTN_SECONDARY_STYLE)
+            btn_match_apply.clicked.connect(self._on_match_eq_apply)
+            layout.addWidget(btn_match_apply)
+
+        # ── Phase 2: I-17 Monitor toggle ──
+        if _HAS_RT_MONITOR and self._rt_monitor:
+            btn_monitor = QPushButton("MONITOR")
+            btn_monitor.setStyleSheet(BTN_SECONDARY_STYLE)
+            btn_monitor.setCheckable(True)
+            btn_monitor.setToolTip("Toggle real-time audio monitoring")
+            btn_monitor.toggled.connect(self._on_monitor_toggle)
+            layout.addWidget(btn_monitor)
+
         # V5.4 FIX: Live stage label for meter display
         self.live_stage_label = QLabel("STAGE: IDLE")
         self.live_stage_label.setStyleSheet(
@@ -5375,6 +5599,11 @@ class MasterPanel(QWidget):
     # The new flow uses _on_one_button_master() instead.
 
     def _on_ab_compare(self):
+        # Phase 2: I-7 — use ABComparison module for instant toggle
+        if _HAS_AB_COMPARE and self._ab_compare:
+            self._ab_compare.toggle()
+            return
+
         ab = self.chain.get_ab_comparison()
         if not ab:
             QMessageBox.information(self, "A/B Compare",
