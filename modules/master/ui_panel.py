@@ -3765,6 +3765,16 @@ class MasterPanel(QWidget):
         self._last_rec = None
         self._last_master_rec = None
 
+        # V5.8 E-3: Undo/Redo
+        from modules.master.undo import CommandHistory
+        self._cmd_history = CommandHistory()
+
+        # V5.8 E-4: AutoSave timer (60s)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(60000)
+        self._autosave_timer.timeout.connect(self._autosave)
+        self._autosave_timer.start()
+
         # V5.4 FIX: Batch Processing State
         self.track_queue = []           # List of all track paths to process
         self.current_track_index = 0    # Current position in queue (0-based)
@@ -4113,7 +4123,123 @@ class MasterPanel(QWidget):
         bands_group.setLayout(bands_layout)
         layout.addWidget(bands_group)
 
+        # V5.8 E-2: Match EQ section
+        match_group = QGroupBox("MATCH EQ")
+        match_layout = QHBoxLayout()
+        match_layout.setSpacing(6)
+
+        self.match_ref_btn = QPushButton("LOAD REFERENCE")
+        self.match_ref_btn.setFixedHeight(26)
+        self.match_ref_btn.setStyleSheet(f"""
+            QPushButton {{ background:#1A1A1E; border:1px solid {C_TEAL_DIM}; border-radius:3px;
+                color:{C_TEAL}; font-weight:bold; font-size:9px; padding:3px 8px; }}
+            QPushButton:hover {{ background:{C_TEAL_DIM}; color:#FFF; }}
+        """)
+        self.match_ref_btn.clicked.connect(self._on_match_eq_load)
+        match_layout.addWidget(self.match_ref_btn)
+
+        self.match_ref_label = QLabel("No reference")
+        self.match_ref_label.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:9px;")
+        match_layout.addWidget(self.match_ref_label)
+
+        self.match_strength = QSlider(Qt.Orientation.Horizontal)
+        self.match_strength.setRange(0, 100)
+        self.match_strength.setValue(50)
+        self.match_strength.setFixedWidth(80)
+        match_layout.addWidget(self.match_strength)
+
+        self.match_strength_val = QLabel("50%")
+        self.match_strength_val.setStyleSheet(f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-size:9px;")
+        self.match_strength.valueChanged.connect(
+            lambda v: self.match_strength_val.setText(f"{v}%"))
+        match_layout.addWidget(self.match_strength_val)
+
+        self.match_apply_btn = QPushButton("APPLY")
+        self.match_apply_btn.setFixedHeight(26)
+        self.match_apply_btn.setEnabled(False)
+        self.match_apply_btn.setStyleSheet(f"""
+            QPushButton {{ background:#1A1A1E; border:1px solid {C_TEAL_DIM}; border-radius:3px;
+                color:{C_TEAL}; font-weight:bold; font-size:9px; padding:3px 8px; }}
+            QPushButton:hover {{ background:{C_TEAL_DIM}; color:#FFF; }}
+            QPushButton:disabled {{ color:#4A4844; border-color:#2A2A30; }}
+        """)
+        self.match_apply_btn.clicked.connect(self._on_match_eq_apply)
+        match_layout.addWidget(self.match_apply_btn)
+
+        match_group.setLayout(match_layout)
+        layout.addWidget(match_group)
+
         return widget
+
+    def _on_match_eq_load(self):
+        """Load reference WAV for Match EQ."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Reference Track", "", "Audio Files (*.wav *.flac *.mp3 *.aif *.aiff)")
+        if path:
+            import os
+            self._match_ref_path = path
+            self.match_ref_label.setText(os.path.basename(path))
+            self.match_apply_btn.setEnabled(True)
+
+    def _on_match_eq_apply(self):
+        """Apply Match EQ correction from reference track."""
+        ref_path = getattr(self, '_match_ref_path', None)
+        src_path = self.chain.input_path
+        if not ref_path or not src_path:
+            return
+
+        try:
+            import soundfile as sf
+            import numpy as np
+
+            # Load and analyze both tracks
+            ref_data, ref_sr = sf.read(ref_path, dtype='float64')
+            src_data, src_sr = sf.read(src_path, dtype='float64')
+
+            if ref_data.ndim > 1:
+                ref_data = ref_data.mean(axis=1)
+            if src_data.ndim > 1:
+                src_data = src_data.mean(axis=1)
+
+            # FFT of both
+            n = 4096
+            ref_fft = np.abs(np.fft.rfft(ref_data[:n] * np.hanning(min(n, len(ref_data))), n=n))
+            src_fft = np.abs(np.fft.rfft(src_data[:n] * np.hanning(min(n, len(src_data))), n=n))
+
+            # Correction = ref - src in dB
+            ref_db = 20 * np.log10(np.maximum(ref_fft, 1e-10))
+            src_db = 20 * np.log10(np.maximum(src_fft, 1e-10))
+            diff_db = ref_db - src_db
+
+            # Apply strength
+            strength = self.match_strength.value() / 100.0
+
+            # Map to 8 EQ bands
+            freqs = np.fft.rfftfreq(n, 1.0 / ref_sr)
+            band_centers = [32, 64, 125, 250, 1000, 4000, 8000, 16000]
+            for i, fc in enumerate(band_centers):
+                # Find nearest bin
+                bin_idx = np.argmin(np.abs(freqs - fc))
+                # Average a few bins around center
+                lo = max(0, bin_idx - 3)
+                hi = min(len(diff_db), bin_idx + 4)
+                correction = float(np.mean(diff_db[lo:hi])) * strength
+                correction = max(-12.0, min(12.0, correction))
+
+                # Apply to EQ band
+                if i < len(self.chain.equalizer.bands):
+                    self.chain.equalizer.bands[i].gain = correction
+                    if i < len(self.eq_band_sliders):
+                        slider, label = self.eq_band_sliders[i]
+                        slider.blockSignals(True)
+                        slider.setValue(int(correction * 10))
+                        slider.blockSignals(False)
+                        label.setText(f"{correction:.1f}")
+
+            self.meters.set_status("MATCH EQ APPLIED", C_LED_GREEN)
+        except Exception as e:
+            print(f"[MATCH EQ] Error: {e}")
+            self.meters.set_status("MATCH EQ FAILED", C_LED_RED)
 
     # ─── DYNAMICS VIEW ────────────────────────
     def _build_dynamics_view(self):
@@ -4748,6 +4874,25 @@ class MasterPanel(QWidget):
         layout.setSpacing(12)
 
         layout.addWidget(self._module_title("MASTER ASSISTANT"))
+
+        # V5.8 D-3: Auto-detect genre button
+        detect_row = QHBoxLayout()
+        detect_row.setSpacing(6)
+        self.btn_auto_detect = QPushButton("AUTO-DETECT GENRE")
+        self.btn_auto_detect.setFixedHeight(28)
+        self.btn_auto_detect.setStyleSheet(f"""
+            QPushButton {{ background:#1A1A1E; border:1px solid {C_AMBER_DIM}; border-radius:3px;
+                color:{C_AMBER}; font-weight:bold; font-size:9px; padding:3px 10px; }}
+            QPushButton:hover {{ background:{C_AMBER_DIM}; color:#FFF; }}
+        """)
+        self.btn_auto_detect.clicked.connect(self._on_auto_detect_genre)
+        detect_row.addWidget(self.btn_auto_detect)
+
+        self.ai_detected_label = QLabel("")
+        self.ai_detected_label.setStyleSheet(f"color:{C_AMBER_GLOW}; font-size:10px; font-weight:bold;")
+        detect_row.addWidget(self.ai_detected_label)
+        detect_row.addStretch()
+        layout.addLayout(detect_row)
 
         # Genre + Platform (compact row)
         config_row = QHBoxLayout()
@@ -5796,23 +5941,20 @@ class MasterPanel(QWidget):
     # The new flow uses _on_one_button_master() instead.
 
     def _on_ab_compare(self):
-        ab = self.chain.get_ab_comparison()
-        if not ab:
-            QMessageBox.information(self, "A/B Compare",
-                                    "Master audio first to compare Before/After")
-            return
-
-        msg = (
-            f"=== A/B COMPARISON ===\n\n"
-            f"                Before    >    After       Delta\n"
-            f"LUFS:       {ab['before']['lufs']:>7.1f}    >  {ab['after']['lufs']:>7.1f}    "
-            f"({ab['delta']['lufs']:+.1f})\n"
-            f"True Peak:  {ab['before']['true_peak']:>7.1f}    >  {ab['after']['true_peak']:>7.1f}    "
-            f"({ab['delta']['true_peak']:+.1f})\n"
-            f"LRA:        {ab['before']['lra']:>7.1f}    >  {ab['after']['lra']:>7.1f}    "
-            f"({ab['delta']['lra']:+.1f})"
-        )
-        QMessageBox.information(self, "A/B Comparison", msg)
+        """V5.8 E-1: Toggle A/B compare — switch between ORIGINAL and MASTERED playback."""
+        self._is_bypass_mode = not self._is_bypass_mode
+        self._on_transport_bypass(self._is_bypass_mode)
+        # Update button text
+        if self._is_bypass_mode:
+            self.btn_ab.setText("▶ ORIGINAL")
+            self.btn_ab.setStyleSheet(
+                f"QPushButton {{ background: #3D2E0A; color: {C_AMBER_GLOW}; font-weight: bold; "
+                f"font-size: 10px; padding: 6px 12px; border-radius: 3px; border: 1px solid {C_AMBER}; }}")
+        else:
+            self.btn_ab.setText("A/B COMPARE")
+            self.btn_ab.setStyleSheet(
+                f"QPushButton {{ background: #1A1A1E; color: {C_TEAL_GLOW}; font-weight: bold; "
+                f"font-size: 10px; padding: 6px 12px; border-radius: 3px; border: 1px solid {C_TEAL_DIM}; }}")
 
     def _on_progress(self, percent, status):
         if percent >= 0:
@@ -6010,8 +6152,101 @@ class MasterPanel(QWidget):
             self.meters.set_status("⏹ ENDED", C_AMBER_DIM)
 
     def keyPressEvent(self, event):
-        """V5.5.1: Transport bar removed — spacebar no longer controls preview here."""
-        super().keyPressEvent(event)
+        """V5.8 E-1: B key toggles A/B compare."""
+        if event.key() == Qt.Key.Key_B and self.btn_ab.isEnabled():
+            self._on_ab_compare()
+        elif event.key() == Qt.Key.Key_Z and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self._redo()
+            else:
+                self._undo()
+        else:
+            super().keyPressEvent(event)
+
+    def _on_auto_detect_genre(self):
+        """V5.8 D-3: Auto-detect genre from first 5 seconds of audio."""
+        audio_path = getattr(self, '_current_audio_path', None) or self.chain.input_path
+        if not audio_path:
+            self.ai_detected_label.setText("No audio loaded")
+            return
+
+        self.btn_auto_detect.setText("ANALYZING...")
+        self.btn_auto_detect.setEnabled(False)
+
+        def _detect():
+            try:
+                import soundfile as sf
+                import numpy as np
+
+                data, sr = sf.read(audio_path, dtype='float64', frames=sr * 5 if 'sr' in dir() else 5 * 44100)
+                if isinstance(data, tuple):
+                    data, sr = data
+
+                # Re-read with correct sr
+                data, sr = sf.read(audio_path, dtype='float64')
+                # Take first 5 seconds
+                n_samples = min(len(data), sr * 5)
+                data = data[:n_samples]
+
+                if data.ndim > 1:
+                    mono = data.mean(axis=1)
+                else:
+                    mono = data
+
+                # Simple spectral analysis for genre detection
+                fft = np.abs(np.fft.rfft(mono[:4096] * np.hanning(min(4096, len(mono)))))
+                freqs = np.fft.rfftfreq(4096, 1.0 / sr)
+
+                # Energy in bass (20-200 Hz), mid (200-2000 Hz), high (2000-20000 Hz)
+                bass = np.mean(fft[(freqs >= 20) & (freqs < 200)])
+                mid = np.mean(fft[(freqs >= 200) & (freqs < 2000)])
+                high = np.mean(fft[(freqs >= 2000) & (freqs < 20000)])
+                total = bass + mid + high + 1e-10
+
+                bass_ratio = bass / total
+                high_ratio = high / total
+
+                # RMS level
+                rms = np.sqrt(np.mean(mono ** 2))
+                rms_db = 20 * np.log10(max(rms, 1e-10))
+
+                # Simple heuristic genre detection
+                if rms_db > -8 and bass_ratio > 0.5:
+                    genre = "EDM"
+                elif rms_db > -10 and bass_ratio > 0.4:
+                    genre = "Hip-Hop"
+                elif high_ratio > 0.3 and rms_db > -12:
+                    genre = "Pop"
+                elif rms_db < -16:
+                    genre = "Ambient"
+                elif bass_ratio > 0.35:
+                    genre = "Rock"
+                elif high_ratio > 0.25:
+                    genre = "Jazz"
+                else:
+                    genre = "All-Purpose Mastering"
+
+                confidence = min(85, int(50 + abs(rms_db) * 2))
+
+                def _update():
+                    self.btn_auto_detect.setText("AUTO-DETECT GENRE")
+                    self.btn_auto_detect.setEnabled(True)
+                    self.ai_detected_label.setText(f"{genre} ({confidence}%)")
+                    # Set the combo box
+                    idx = self.ai_genre.findText(genre)
+                    if idx >= 0:
+                        self.ai_genre.setCurrentIndex(idx)
+
+                self._call_on_main.emit(_update)
+
+            except Exception as e:
+                def _err():
+                    self.btn_auto_detect.setText("AUTO-DETECT GENRE")
+                    self.btn_auto_detect.setEnabled(True)
+                    self.ai_detected_label.setText(f"Error: {e}")
+                self._call_on_main.emit(_err)
+
+        threading.Thread(target=_detect, daemon=True).start()
 
     def _on_one_button_master(self):
         """One-button master: analyze → recommend → apply → preview."""
@@ -6514,6 +6749,96 @@ class MasterPanel(QWidget):
             self._meter_update_timer.stop()
         if hasattr(self, 'live_stage_label'):
             self.live_stage_label.setText("STAGE: ✓ READY")
+
+    # ═══════════════════════════════════════════
+    #  V5.8 E-3: Undo / Redo System
+    # ═══════════════════════════════════════════
+
+    def _push_undo(self, module: str, param: str, old_val, new_val, desc: str = ""):
+        """Record a parameter change for undo."""
+        from modules.master.undo import Command
+        if old_val != new_val:
+            self._cmd_history.push(Command(module, param, old_val, new_val, desc or f"{module}.{param}"))
+
+    def _undo(self):
+        """Undo last parameter change (Ctrl+Z)."""
+        cmd = self._cmd_history.undo()
+        if cmd:
+            self._apply_param(cmd.module, cmd.param, cmd.old_val)
+            self.meters.set_status(f"UNDO: {cmd.description}", C_AMBER)
+            print(f"[UNDO] {cmd.description}: {cmd.new_val} → {cmd.old_val}")
+
+    def _redo(self):
+        """Redo last undone change (Ctrl+Shift+Z)."""
+        cmd = self._cmd_history.redo()
+        if cmd:
+            self._apply_param(cmd.module, cmd.param, cmd.new_val)
+            self.meters.set_status(f"REDO: {cmd.description}", C_TEAL_GLOW)
+            print(f"[REDO] {cmd.description}: {cmd.old_val} → {cmd.new_val}")
+
+    def _apply_param(self, module: str, param: str, value):
+        """Apply a parameter value to the chain module."""
+        mod = getattr(self.chain, module, None)
+        if mod:
+            setattr(mod, param, value)
+            self._sync_maximizer_ui()
+
+    # ═══════════════════════════════════════════
+    #  V5.8 E-4: AutoSave System
+    # ═══════════════════════════════════════════
+
+    def _autosave(self):
+        """Auto-save current chain settings every 60 seconds."""
+        import os
+        import json
+        from datetime import datetime
+
+        save_dir = os.path.expanduser("~/.longplay_studio/autosave")
+        os.makedirs(save_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_path = os.path.join(save_dir, f"autosave_{timestamp}.json")
+
+        try:
+            settings = self.chain.save_settings()
+            with open(save_path, 'w') as f:
+                json.dump(settings, f, indent=2)
+
+            # Keep only last 10 autosaves
+            files = sorted([f for f in os.listdir(save_dir) if f.startswith("autosave_")])
+            while len(files) > 10:
+                os.remove(os.path.join(save_dir, files.pop(0)))
+        except Exception as e:
+            print(f"[AUTOSAVE] Error: {e}")
+
+    def _check_autosave_recovery(self):
+        """Check for autosave on launch and offer recovery."""
+        import os
+        import json
+
+        save_dir = os.path.expanduser("~/.longplay_studio/autosave")
+        if not os.path.isdir(save_dir):
+            return
+
+        files = sorted([f for f in os.listdir(save_dir) if f.startswith("autosave_")])
+        if not files:
+            return
+
+        latest = os.path.join(save_dir, files[-1])
+        try:
+            reply = QMessageBox.question(
+                self, "Recover Session",
+                f"Found autosaved session:\n{files[-1]}\n\nRecover last session?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+
+            if reply == QMessageBox.StandardButton.Yes:
+                with open(latest, 'r') as f:
+                    settings = json.load(f)
+                self.chain.load_settings(settings)
+                self._sync_maximizer_ui()
+                self.meters.set_status("SESSION RECOVERED", C_LED_GREEN)
+        except Exception as e:
+            print(f"[AUTOSAVE] Recovery error: {e}")
 
     # ═══════════════════════════════════════════
     #  V5.4 FIX: Batch Processing System
