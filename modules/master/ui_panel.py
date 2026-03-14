@@ -1927,8 +1927,24 @@ class WavesWLMMeter(QWidget):
 
         for i, (label, val, unit) in enumerate(boxes):
             bx = 6 + i * (box_w + gap)
-            # LCD background
-            p.fillRect(bx, box_y, box_w, box_h, QColor("#080808"))
+
+            # V5.8 C-1: Color-coded LCD background based on target proximity
+            if label == "RANGE":
+                box_bg = QColor("#080808")
+            else:
+                is_active = val > -69
+                if is_active:
+                    diff = abs(val - self._target)
+                    if diff <= 2.0:
+                        box_bg = QColor(67, 160, 71, 40)    # green tint
+                    elif diff <= 5.0:
+                        box_bg = QColor(253, 216, 53, 30)    # yellow tint
+                    else:
+                        box_bg = QColor(229, 57, 53, 35)     # red tint
+                else:
+                    box_bg = QColor("#080808")
+
+            p.fillRect(bx, box_y, box_w, box_h, box_bg)
             p.setPen(QPen(QColor("#1A1A1E"), 1))
             p.drawRect(bx, box_y, box_w, box_h)
 
