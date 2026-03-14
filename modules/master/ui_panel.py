@@ -2411,6 +2411,285 @@ class OzoneLevelMeter(QWidget):
 
 
 # ══════════════════════════════════════════════════
+#  Logic Channel Strip Meters — BEFORE / AFTER
+# ══════════════════════════════════════════════════
+
+class LogicChannelMeter(QWidget):
+    """
+    V5.8 Logic Pro X Channel Strip Meters — BEFORE / AFTER (QPainter).
+
+    Two pairs of tall vertical L/R bars side-by-side:
+      BEFORE (input signal) | AFTER (post-maximizer output)
+
+    - Gradient: green (< -12 dB), yellow (-12 to -3 dB), red (-3 to 0 dB)
+    - Peak hold line (white, 2s hold, 20 dB/s decay)
+    - Numeric peak at top, clip indicator (red dot) above ceiling
+    - Scale markings: 0, -3, -6, -12, -24, -48 dB
+    - AFTER meter NEVER exceeds Output Ceiling — proves limiter works
+    """
+
+    DB_MIN = -60.0
+    DB_MAX = 3.0
+    DB_RANGE = DB_MAX - DB_MIN  # 63 dB
+    PEAK_HOLD_TIME_MS = 2000
+    PEAK_DECAY_RATE = 20.0  # dB per second
+
+    def __init__(self, ceiling_db: float = -1.0, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(260, 260)
+        self.ceiling_db = ceiling_db
+
+        # BEFORE levels
+        self.before_l_peak = -60.0
+        self.before_r_peak = -60.0
+        self.before_l_rms = -60.0
+        self.before_r_rms = -60.0
+        # AFTER levels
+        self.after_l_peak = -60.0
+        self.after_r_peak = -60.0
+        self.after_l_rms = -60.0
+        self.after_r_rms = -60.0
+
+        # Peak hold state: [current_hold_db, timestamp_ms]
+        import time as _time
+        self._time = _time
+        self._peak_holds = {
+            'bl': [self.DB_MIN, 0.0], 'br': [self.DB_MIN, 0.0],
+            'al': [self.DB_MIN, 0.0], 'ar': [self.DB_MIN, 0.0],
+        }
+        # Clip indicators (sticky until reset)
+        self._clip = {'bl': False, 'br': False, 'al': False, 'ar': False}
+
+        # dB scale ticks
+        self._db_ticks = [0, -3, -6, -12, -24, -48]
+
+        # Colors
+        self._col_green = QColor("#22C55E")
+        self._col_yellow = QColor("#FACC15")
+        self._col_red = QColor("#EF4444")
+        self._col_green_dim = QColor("#0B3D1E")
+        self._col_yellow_dim = QColor("#3D3200")
+        self._col_red_dim = QColor("#3D0A0A")
+        self._col_bg = QColor("#08080A")
+        self._col_peak_hold = QColor("#FFFFFF")
+        self._col_clip = QColor("#FF1744")
+
+    def set_ceiling(self, ceiling_db: float):
+        self.ceiling_db = ceiling_db
+
+    def set_before(self, l_peak=-60.0, r_peak=-60.0, l_rms=-60.0, r_rms=-60.0):
+        self.before_l_peak = max(self.DB_MIN, min(self.DB_MAX, l_peak))
+        self.before_r_peak = max(self.DB_MIN, min(self.DB_MAX, r_peak))
+        self.before_l_rms = max(self.DB_MIN, min(self.DB_MAX, l_rms))
+        self.before_r_rms = max(self.DB_MIN, min(self.DB_MAX, r_rms))
+        self._update_hold('bl', self.before_l_peak)
+        self._update_hold('br', self.before_r_peak)
+        if self.before_l_peak > self.ceiling_db:
+            self._clip['bl'] = True
+        if self.before_r_peak > self.ceiling_db:
+            self._clip['br'] = True
+        self.update()
+
+    def set_after(self, l_peak=-60.0, r_peak=-60.0, l_rms=-60.0, r_rms=-60.0):
+        self.after_l_peak = max(self.DB_MIN, min(self.DB_MAX, l_peak))
+        self.after_r_peak = max(self.DB_MIN, min(self.DB_MAX, r_peak))
+        self.after_l_rms = max(self.DB_MIN, min(self.DB_MAX, l_rms))
+        self.after_r_rms = max(self.DB_MIN, min(self.DB_MAX, r_rms))
+        self._update_hold('al', self.after_l_peak)
+        self._update_hold('ar', self.after_r_peak)
+        if self.after_l_peak > self.ceiling_db:
+            self._clip['al'] = True
+        if self.after_r_peak > self.ceiling_db:
+            self._clip['ar'] = True
+        self.update()
+
+    def reset(self):
+        for k in self._peak_holds:
+            self._peak_holds[k] = [self.DB_MIN, 0.0]
+        for k in self._clip:
+            self._clip[k] = False
+        self.before_l_peak = self.before_r_peak = self.DB_MIN
+        self.before_l_rms = self.before_r_rms = self.DB_MIN
+        self.after_l_peak = self.after_r_peak = self.DB_MIN
+        self.after_l_rms = self.after_r_rms = self.DB_MIN
+        self.update()
+
+    def _update_hold(self, key, peak_db):
+        now = self._time.time() * 1000.0
+        hold_db, hold_ts = self._peak_holds[key]
+        if peak_db >= hold_db:
+            self._peak_holds[key] = [peak_db, now]
+        else:
+            elapsed_s = (now - hold_ts) / 1000.0
+            if elapsed_s > (self.PEAK_HOLD_TIME_MS / 1000.0):
+                decay = self.PEAK_DECAY_RATE * (elapsed_s - self.PEAK_HOLD_TIME_MS / 1000.0)
+                new_hold = hold_db - decay
+                if new_hold < self.DB_MIN:
+                    new_hold = self.DB_MIN
+                self._peak_holds[key][0] = new_hold
+
+    def _db_to_y(self, db, top_y, bar_h):
+        db = max(self.DB_MIN, min(self.DB_MAX, db))
+        ratio = (db - self.DB_MIN) / self.DB_RANGE
+        return top_y + int(bar_h * (1.0 - ratio))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = self.width(), self.height()
+
+        # Background
+        p.fillRect(0, 0, w, h, QColor("#0A0A0C"))
+        p.setPen(QPen(QColor("#1A1A1E"), 1))
+        p.drawRect(1, 1, w - 3, h - 3)
+
+        # Layout constants
+        bar_w = 18
+        pair_gap = 4       # gap between L and R within a pair
+        section_gap = 16   # gap between BEFORE and AFTER sections
+        scale_w = 26
+        label_h = 16       # bottom label height
+        top_margin = 22    # space for peak readout + clip dot
+        bottom_margin = label_h + 4
+
+        pair_w = 2 * bar_w + pair_gap
+        total_w = scale_w + pair_w + section_gap + pair_w + scale_w
+        start_x = (w - total_w) // 2
+
+        top_y = top_margin
+        bar_h = h - top_margin - bottom_margin
+
+        # Positions
+        scale1_x = start_x
+        before_l_x = scale1_x + scale_w
+        before_r_x = before_l_x + bar_w + pair_gap
+        after_l_x = before_r_x + bar_w + section_gap
+        after_r_x = after_l_x + bar_w + pair_gap
+        scale2_x = after_r_x + bar_w + 2
+
+        # ── dB Scale (left) ──
+        p.setFont(QFont("Menlo", 7))
+        p.setPen(QColor(C_CREAM_DIM))
+        for db_val in self._db_ticks:
+            y = self._db_to_y(db_val, top_y, bar_h)
+            p.drawText(scale1_x, y + 3, f"{db_val:>3}")
+            # Tick marks
+            p.setPen(QPen(QColor(C_RIDGE), 1))
+            p.drawLine(before_l_x - 3, y, before_l_x - 1, y)
+            p.setPen(QColor(C_CREAM_DIM))
+
+        # ── dB Scale (right) ──
+        for db_val in self._db_ticks:
+            y = self._db_to_y(db_val, top_y, bar_h)
+            p.drawText(scale2_x, y + 3, f"{db_val:>3}")
+            p.setPen(QPen(QColor(C_RIDGE), 1))
+            p.drawLine(after_r_x + bar_w + 1, y, after_r_x + bar_w + 3, y)
+            p.setPen(QColor(C_CREAM_DIM))
+
+        # ── Ceiling line (dashed, across AFTER section only) ──
+        ceiling_y = self._db_to_y(self.ceiling_db, top_y, bar_h)
+        pen_ceil = QPen(QColor(C_TEAL_GLOW), 1, Qt.PenStyle.DashLine)
+        p.setPen(pen_ceil)
+        p.drawLine(after_l_x - 2, ceiling_y, after_r_x + bar_w + 2, ceiling_y)
+        p.setFont(QFont("Menlo", 7))
+        p.setPen(QColor(C_TEAL_GLOW))
+        p.drawText(after_r_x + bar_w + 5, ceiling_y + 3,
+                   f"{self.ceiling_db:.1f}")
+
+        # ── Draw meter bars ──
+        self._draw_bar(p, before_l_x, top_y, bar_w, bar_h,
+                       self.before_l_rms, self.before_l_peak, 'bl')
+        self._draw_bar(p, before_r_x, top_y, bar_w, bar_h,
+                       self.before_r_rms, self.before_r_peak, 'br')
+        self._draw_bar(p, after_l_x, top_y, bar_w, bar_h,
+                       self.after_l_rms, self.after_l_peak, 'al')
+        self._draw_bar(p, after_r_x, top_y, bar_w, bar_h,
+                       self.after_r_rms, self.after_r_peak, 'ar')
+
+        # ── Peak numeric readout (top) ──
+        p.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
+        before_max = max(self.before_l_peak, self.before_r_peak)
+        after_max = max(self.after_l_peak, self.after_r_peak)
+        b_txt = f"{before_max:.1f}" if before_max > -59 else "---"
+        a_txt = f"{after_max:.1f}" if after_max > -59 else "---"
+        b_col = QColor(self._col_red) if before_max > -1.0 else QColor(C_AMBER_GLOW)
+        a_col = QColor(self._col_red) if after_max > self.ceiling_db else QColor(C_LED_GREEN)
+        p.setPen(b_col)
+        bm = p.fontMetrics().boundingRect(b_txt)
+        bx_center = before_l_x + (pair_w - bm.width()) // 2
+        p.drawText(bx_center, 12, b_txt)
+        p.setPen(a_col)
+        am = p.fontMetrics().boundingRect(a_txt)
+        ax_center = after_l_x + (pair_w - am.width()) // 2
+        p.drawText(ax_center, 12, a_txt)
+
+        # ── Clip dots (red circle above bars if clipped) ──
+        for key, cx in [('bl', before_l_x + bar_w // 2),
+                        ('br', before_r_x + bar_w // 2),
+                        ('al', after_l_x + bar_w // 2),
+                        ('ar', after_r_x + bar_w // 2)]:
+            if self._clip[key]:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QBrush(self._col_clip))
+                p.drawEllipse(cx - 3, top_y - 8, 6, 6)
+
+        # ── Bottom labels ──
+        p.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
+        p.setPen(QColor(C_GOLD))
+        b_lbl_x = before_l_x + (pair_w - p.fontMetrics().boundingRect("BEFORE").width()) // 2
+        p.drawText(b_lbl_x, h - 4, "BEFORE")
+        p.setPen(QColor(C_TEAL_GLOW))
+        a_lbl_x = after_l_x + (pair_w - p.fontMetrics().boundingRect("AFTER").width()) // 2
+        p.drawText(a_lbl_x, h - 4, "AFTER")
+
+        # ── L/R sub-labels ──
+        p.setFont(QFont("Menlo", 6))
+        p.setPen(QColor(C_CREAM_DIM))
+        p.drawText(before_l_x + bar_w // 2 - 2, h - 14, "L")
+        p.drawText(before_r_x + bar_w // 2 - 2, h - 14, "R")
+        p.drawText(after_l_x + bar_w // 2 - 2, h - 14, "L")
+        p.drawText(after_r_x + bar_w // 2 - 2, h - 14, "R")
+
+        p.end()
+
+    def _draw_bar(self, p, x, y_top, bw, bh, rms_db, peak_db, hold_key):
+        """Draw a single vertical metering bar with Logic Pro gradient."""
+        seg_h = 2
+        seg_gap = 1
+        seg_step = seg_h + seg_gap
+        num_seg = bh // seg_step
+
+        # Bar background
+        p.fillRect(x, y_top, bw, bh, self._col_bg)
+
+        for i in range(num_seg):
+            seg_y = y_top + bh - (i + 1) * seg_step
+            seg_db = self.DB_MIN + (i / max(1, num_seg - 1)) * self.DB_RANGE
+
+            # Color selection: green → yellow → red
+            if seg_db > -3.0:
+                col_on, col_dim = self._col_red, self._col_red_dim
+            elif seg_db > -12.0:
+                col_on, col_dim = self._col_yellow, self._col_yellow_dim
+            else:
+                col_on, col_dim = self._col_green, self._col_green_dim
+
+            if seg_db <= rms_db:
+                p.fillRect(x + 1, seg_y, bw - 2, seg_h, col_on)
+            elif seg_db <= peak_db:
+                p.fillRect(x + 1, seg_y, bw - 2, seg_h, col_dim)
+            else:
+                p.fillRect(x + 1, seg_y, bw - 2, seg_h, QColor("#101012"))
+
+        # Peak hold line (white)
+        hold_db = self._peak_holds[hold_key][0]
+        if hold_db > self.DB_MIN + 1:
+            hold_y = self._db_to_y(hold_db, y_top, bh)
+            p.setPen(QPen(self._col_peak_hold, 2))
+            p.drawLine(x + 1, hold_y, x + bw - 2, hold_y)
+
+
+# ══════════════════════════════════════════════════
 #  Loudness Meter Bars — Logic Pro X / Ozone 12 Style
 # ══════════════════════════════════════════════════
 class LoudnessMeterBars(QWidget):
@@ -2820,6 +3099,12 @@ class MetersPanel(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
+        # ── V5.8: LOGIC CHANNEL STRIP METERS (BEFORE / AFTER) ──
+        self.live_logic_meter = LogicChannelMeter(ceiling_db=-1.0)
+        layout.addWidget(self.live_logic_meter, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(self._groove_divider())
+
         # L/R Level Meter (reuse OzoneLevelMeter)
         self.live_ozone_meter = OzoneLevelMeter()
         layout.addWidget(self.live_ozone_meter, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -2969,6 +3254,16 @@ class MetersPanel(QFrame):
         r_peak = levels.get("right_peak_db", -60.0)
         l_rms = levels.get("left_rms_db", -60.0)
         r_rms = levels.get("right_rms_db", -60.0)
+        stage = levels.get("stage", "")
+
+        # V5.8: Logic Channel Strip BEFORE/AFTER Meters
+        if hasattr(self, 'live_logic_meter') and self.live_logic_meter is not None:
+            if stage == "pre_chain":
+                self.live_logic_meter.set_before(
+                    l_peak=l_peak, r_peak=r_peak, l_rms=l_rms, r_rms=r_rms)
+            elif stage in ("final", "post_loudnorm", "post_maximizer"):
+                self.live_logic_meter.set_after(
+                    l_peak=l_peak, r_peak=r_peak, l_rms=l_rms, r_rms=r_rms)
 
         # L/R Level Meter (SSL/Neve style)
         self.live_ozone_meter.set_levels(
@@ -2996,10 +3291,10 @@ class MetersPanel(QFrame):
             self.live_gr_history.set_gr(gr)
 
         # Stage
-        stage = levels.get("stage", "")
         stage_names = {
-            "post_eq": "EQ", "post_dynamics": "DYNAMICS", "post_imager": "IMAGER",
-            "post_maximizer": "MAXIMIZER", "post_loudnorm": "LOUDNESS", "final": "FINAL",
+            "pre_chain": "INPUT", "post_eq": "EQ", "post_dynamics": "DYNAMICS",
+            "post_imager": "IMAGER", "post_maximizer": "MAXIMIZER",
+            "post_loudnorm": "LOUDNESS", "final": "FINAL",
             "realtime": "REAL-TIME DSP", "realtime_lufs": "REAL-TIME DSP",
             "playback": "PLAYBACK",
         }
@@ -3027,6 +3322,9 @@ class MetersPanel(QFrame):
         self.target_val.setText(f"{lufs:.1f} LUFS")
         self.target_platform.setText(platform)
         self._target_tp = tp
+        # V5.8: Sync ceiling to Logic Channel Meter
+        if hasattr(self, 'live_logic_meter') and self.live_logic_meter is not None:
+            self.live_logic_meter.set_ceiling(tp)
 
     def set_status(self, text, color=None):
         self.status_row[1].setText(text)
@@ -3440,9 +3738,9 @@ class MasterPanel(QWidget):
         self.setStyleSheet(GLOBAL_STYLE)
         self._setup_ui()
 
-        # V5.4 FIX: QTimer for realtime meter UI updates (20 Hz)
+        # V5.8: QTimer for realtime meter UI updates (30 Hz — smooth Logic meters)
         self._meter_update_timer = QTimer(self)
-        self._meter_update_timer.setInterval(50)  # 50ms = 20 Hz
+        self._meter_update_timer.setInterval(33)  # 33ms = ~30 Hz
         self._meter_update_timer.timeout.connect(self._update_realtime_meters)
 
         # Connect meter callback from chain (called from MasterWorker thread)
@@ -5977,17 +6275,33 @@ class MasterPanel(QWidget):
                 self._meter_buffer = self._meter_buffer[-self._meter_keep_count:]
 
     def _update_realtime_meters(self):
-        """Update UI with latest meter data (called by QTimer on main thread)."""
+        """Update UI with latest meter data (called by QTimer on main thread at 30 Hz)."""
         with self._meter_lock:
             if not self._meter_buffer:
                 return
-            latest = self._meter_buffer[-1]
-            buf_size = len(self._meter_buffer)
+            # V5.8: Keep all buffered entries so we can extract per-stage data
+            buf_copy = list(self._meter_buffer)
             self._meter_buffer.clear()
 
-        # V5.5: Removed duplicate ozone_meter — all levels shown in MetersPanel
+        # V5.8: Find latest entry for each stage we care about
+        latest = buf_copy[-1]
+        pre_chain_entry = None
+        final_entry = None
+        for entry in buf_copy:
+            s = entry.get("stage", "")
+            if s == "pre_chain":
+                pre_chain_entry = entry
+            elif s in ("final", "post_loudnorm", "post_maximizer"):
+                final_entry = entry
 
-        # V5.4: Update LiveMeterPanel (right side dual-mode panel)
+        # V5.8: Feed LogicChannelMeter (BEFORE/AFTER) via MetersPanel
+        if hasattr(self, 'meters') and hasattr(self.meters, 'live_logic_meter'):
+            if pre_chain_entry:
+                self.meters.update_live_levels(pre_chain_entry)
+            if final_entry:
+                self.meters.update_live_levels(final_entry)
+
+        # V5.4: Update LiveMeterPanel with latest (for all other meters)
         if hasattr(self, 'meters') and hasattr(self.meters, 'update_live_levels'):
             self.meters.update_live_levels(latest)
 
@@ -6034,8 +6348,8 @@ class MasterPanel(QWidget):
             self.max_meter_db.setText(f"{max_peak:.1f} dBTP")
 
         # Update stage indicator (bottom bar)
-        # V5.5: Removed "REAL-TIME DSP" — now Offline-Only architecture
         stage_names = {
+            "pre_chain": "INPUT",
             "post_eq": "EQ",
             "post_dynamics": "DYNAMICS",
             "post_imager": "IMAGER",

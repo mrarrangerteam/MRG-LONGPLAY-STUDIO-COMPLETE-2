@@ -1012,6 +1012,9 @@ class MasterChain:
         pre_gain_linear = 10 ** (-3.0 / 20.0)  # = 0.7079
         result = result * pre_gain_linear
 
+        # V5.8: Send pre-chain meter data (input signal BEFORE any processing)
+        self._send_meter(result, sr, "pre_chain")
+
         # Step 1: EQ
         if callback:
             callback(10, "Applying EQ...")
