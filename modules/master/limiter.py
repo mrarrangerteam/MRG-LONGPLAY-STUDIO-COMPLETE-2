@@ -302,9 +302,14 @@ class LookAheadLimiter:
 
     def _fallback_limit(self, audio: np.ndarray) -> np.ndarray:
         """Fallback when scipy is not available: simple peak normalization."""
+        if audio.size == 0:
+            self._last_gr_db = 0.0
+            return audio
         peak = np.max(np.abs(audio))
         if peak > self.ceiling_linear:
-            return audio * (self.ceiling_linear / peak)
+            gain = self.ceiling_linear / peak
+            self._last_gr_db = 20.0 * np.log10(max(gain, 1e-10))
+            return audio * gain
         self._last_gr_db = 0.0
         return audio
 
