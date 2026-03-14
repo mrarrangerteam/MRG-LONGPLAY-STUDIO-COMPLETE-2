@@ -3975,11 +3975,35 @@ class MasterPanel(QWidget):
         preset_row.addStretch()
         layout.addLayout(preset_row)
 
+        # V5.8 A-6: Analog/Digital mode + Spectrum overlay
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        self.eq_analog_mode = QCheckBox("ANALOG")
+        self.eq_analog_mode.setStyleSheet(f"color:{C_AMBER}; font-size:9px; font-weight:bold;")
+        self.eq_analog_mode.setToolTip("Analog mode adds subtle harmonic coloring")
+        self.eq_analog_mode.toggled.connect(
+            lambda v: setattr(self.chain.equalizer, 'analog_mode', v))
+        mode_row.addWidget(self.eq_analog_mode)
+
+        self.eq_spectrum_overlay = QCheckBox("SPECTRUM")
+        self.eq_spectrum_overlay.setChecked(True)
+        self.eq_spectrum_overlay.setStyleSheet(f"color:{C_TEAL}; font-size:9px; font-weight:bold;")
+        self.eq_spectrum_overlay.setToolTip("Show live FFT spectrum behind EQ curve")
+        mode_row.addWidget(self.eq_spectrum_overlay)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
+
         # ═══ Visual EQ Curve Display (iZotope Ozone style) ═══
         self.eq_curve = EQCurveWidget()
         self.eq_curve.setMinimumHeight(200)
         self.eq_curve.bandChanged.connect(self._on_eq_curve_band_changed)
         layout.addWidget(self.eq_curve)
+
+        # V5.8 A-6: Spectrum Analyzer (overlaid on EQ curve area)
+        from modules.widgets.spectrum_analyzer import SpectrumAnalyzerWidget
+        self.eq_spectrum = SpectrumAnalyzerWidget()
+        self.eq_spectrum.setFixedSize(self.eq_curve.width() or 400, 180)
+        layout.addWidget(self.eq_spectrum)
 
         # Band sliders (below the curve)
         bands_group = QGroupBox("EQ BANDS")
@@ -4115,6 +4139,12 @@ class MasterPanel(QWidget):
                         curve_widget.setMakeup(value)
                     # Update chain dynamics
                     setattr(self.chain.dynamics.single_band, attribute, value)
+                    # V5.8 A-4: Also update TransferCurve widget
+                    if hasattr(self, 'dyn_transfer_curve'):
+                        sb = self.chain.dynamics.single_band
+                        self.dyn_transfer_curve.set_params(
+                            threshold=sb.threshold, ratio=sb.ratio,
+                            knee=sb.knee, makeup=sb.makeup)
                 return callback
 
             knob.valueChanged.connect(make_knob_callback(attr, self.dyn_curve))
@@ -4124,27 +4154,75 @@ class MasterPanel(QWidget):
         ctrl_group.setLayout(ctrl_layout)
         layout.addWidget(ctrl_group)
 
+        # V5.8 A-4: Transfer Curve + Detection Mode + Parallel Mix row
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(12)
+
+        # Transfer Curve widget
+        from modules.widgets.transfer_curve import TransferCurveWidget
+        self.dyn_transfer_curve = TransferCurveWidget()
+        self.dyn_transfer_curve.set_params(threshold=-16.0, ratio=2.5, knee=6.0, makeup=2.0)
+        bottom_row.addWidget(self.dyn_transfer_curve)
+
+        # Right column: Detection + Parallel Mix
+        right_col = QVBoxLayout()
+        right_col.setSpacing(6)
+
+        # Detection mode
+        det_row = QHBoxLayout()
+        det_row.setSpacing(4)
+        det_lbl = QLabel("DETECTION")
+        det_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:8px; letter-spacing:1px; font-weight:bold;")
+        det_row.addWidget(det_lbl)
+        self.dyn_detection = QComboBox()
+        self.dyn_detection.addItems(["Peak", "Envelope", "RMS"])
+        self.dyn_detection.setCurrentText("RMS")
+        self.dyn_detection.currentTextChanged.connect(
+            lambda t: setattr(self.chain.dynamics, 'detection_mode', t.lower()))
+        det_row.addWidget(self.dyn_detection)
+        right_col.addLayout(det_row)
+
+        # Band Solo/Mute (for multiband)
+        band_ctrl = QHBoxLayout()
+        band_ctrl.setSpacing(4)
+        band_ctrl.addWidget(QLabel("SOLO"))
+        self.dyn_solo_btns = []
+        for band_name in ["LOW", "MID", "HIGH"]:
+            btn = QPushButton(band_name[0])
+            btn.setCheckable(True)
+            btn.setFixedSize(24, 22)
+            btn.setStyleSheet(f"""
+                QPushButton {{ background:#1A1A1E; border:1px solid #2A2A30; border-radius:3px;
+                    color:#6B6B70; font-size:8px; font-weight:bold; }}
+                QPushButton:checked {{ background:{C_TEAL_DIM}; color:#FFF; border-color:{C_TEAL}; }}
+            """)
+            self.dyn_solo_btns.append(btn)
+            band_ctrl.addWidget(btn)
+        right_col.addLayout(band_ctrl)
+
         # Parallel Mix
-        mix_group = QGroupBox("PARALLEL MIX")
-        mix_layout = QHBoxLayout()
+        mix_row = QHBoxLayout()
+        mix_row.setSpacing(4)
         dry_lbl = QLabel("DRY")
-        dry_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:10px;")
-        mix_layout.addWidget(dry_lbl)
+        dry_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:9px;")
+        mix_row.addWidget(dry_lbl)
         self.dyn_mix_slider = QSlider(Qt.Orientation.Horizontal)
         self.dyn_mix_slider.setRange(0, 100)
         self.dyn_mix_slider.setValue(100)
-        mix_layout.addWidget(self.dyn_mix_slider)
+        mix_row.addWidget(self.dyn_mix_slider)
         wet_lbl = QLabel("WET")
-        wet_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:10px;")
-        mix_layout.addWidget(wet_lbl)
+        wet_lbl.setStyleSheet(f"color:{C_CREAM_DIM}; font-size:9px;")
+        mix_row.addWidget(wet_lbl)
         self.dyn_mix_val = QLabel("100%")
         self.dyn_mix_val.setStyleSheet(f"color:{C_AMBER_GLOW}; font-family:'Menlo',monospace; font-weight:bold;")
         self.dyn_mix_slider.valueChanged.connect(self._on_dyn_mix_changed)
-        mix_layout.addWidget(self.dyn_mix_val)
-        mix_group.setLayout(mix_layout)
-        layout.addWidget(mix_group)
+        mix_row.addWidget(self.dyn_mix_val)
+        right_col.addLayout(mix_row)
 
-        layout.addWidget(HardwareDecoration(HardwareDecoration.MODE_VU_PANEL))
+        right_col.addStretch()
+        bottom_row.addLayout(right_col)
+        layout.addLayout(bottom_row)
+
         return widget
 
     # ─── IMAGER VIEW ──────────────────────────
@@ -4245,7 +4323,63 @@ class MasterPanel(QWidget):
         bass_group.setLayout(bass_layout)
         layout.addWidget(bass_group)
 
-        layout.addWidget(HardwareDecoration(HardwareDecoration.MODE_VU_PANEL))
+        # V5.8 A-5: 4-band width sliders
+        band_group = QGroupBox("MULTIBAND WIDTH")
+        band_layout = QGridLayout()
+        band_layout.setSpacing(4)
+        self.img_band_sliders = []
+        band_names = ["LOW", "LOW-MID", "HIGH-MID", "HIGH"]
+        for i, bname in enumerate(band_names):
+            lbl = QLabel(bname)
+            lbl.setStyleSheet(f"color:{C_TEAL}; font-size:7px; letter-spacing:1px; font-weight:bold;")
+            band_layout.addWidget(lbl, i, 0)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, 200)
+            slider.setValue(100)
+            band_layout.addWidget(slider, i, 1)
+            val_lbl = QLabel("100%")
+            val_lbl.setFixedWidth(36)
+            val_lbl.setStyleSheet(f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-size:9px;")
+            band_layout.addWidget(val_lbl, i, 2)
+
+            def make_band_cb(idx, vlbl):
+                def cb(v):
+                    vlbl.setText(f"{v}%")
+                return cb
+            slider.valueChanged.connect(make_band_cb(i, val_lbl))
+            self.img_band_sliders.append((slider, val_lbl))
+        band_group.setLayout(band_layout)
+        layout.addWidget(band_group)
+
+        # V5.8 A-5: Vectorscope + Stereoize + Correlation
+        vis_row = QHBoxLayout()
+        vis_row.setSpacing(8)
+
+        from modules.widgets.vectorscope import VectorscopeWidget
+        self.img_vectorscope = VectorscopeWidget()
+        vis_row.addWidget(self.img_vectorscope)
+
+        vis_ctrl = QVBoxLayout()
+        vis_ctrl.setSpacing(4)
+        self.img_stereoize_i = QCheckBox("STEREOIZE I")
+        self.img_stereoize_i.setStyleSheet(f"color:{C_TEAL}; font-size:9px; font-weight:bold;")
+        vis_ctrl.addWidget(self.img_stereoize_i)
+        self.img_stereoize_ii = QCheckBox("STEREOIZE II")
+        self.img_stereoize_ii.setStyleSheet(f"color:{C_TEAL}; font-size:9px; font-weight:bold;")
+        vis_ctrl.addWidget(self.img_stereoize_ii)
+
+        # Correlation display
+        corr_lbl = QLabel("CORRELATION")
+        corr_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:7px; letter-spacing:1px; font-weight:bold;")
+        vis_ctrl.addWidget(corr_lbl)
+        self.img_corr_value = QLabel("+1.00")
+        self.img_corr_value.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
+        self.img_corr_value.setStyleSheet(f"color:{C_LED_GREEN};")
+        vis_ctrl.addWidget(self.img_corr_value)
+        vis_ctrl.addStretch()
+        vis_row.addLayout(vis_ctrl)
+        layout.addLayout(vis_row)
+
         return widget
 
     # ─── MAXIMIZER VIEW — OZONE 12 STYLE ──────────────────────
