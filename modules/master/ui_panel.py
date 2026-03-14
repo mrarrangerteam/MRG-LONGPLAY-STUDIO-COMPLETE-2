@@ -6800,9 +6800,7 @@ class MasterPanel(QWidget):
         save_path = os.path.join(save_dir, f"autosave_{timestamp}.json")
 
         try:
-            settings = self.chain.save_settings()
-            with open(save_path, 'w') as f:
-                json.dump(settings, f, indent=2)
+            self.chain.save_settings(save_path)
 
             # Keep only last 10 autosaves
             files = sorted([f for f in os.listdir(save_dir) if f.startswith("autosave_")])
