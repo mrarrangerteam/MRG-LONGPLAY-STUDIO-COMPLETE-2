@@ -7724,7 +7724,43 @@ class LongPlayStudioV4(QMainWindow):
         ts_btn.clicked.connect(self._generate_timestamps)
         layout.addWidget(ts_btn)
 
-        # V5.5.1: Master buttons removed — Maximizer on right panel replaces Master Module
+        # V5.6: OPEN FULL MASTERING button — opens MasterPanel with all Phase 5 widgets
+        self.btn_open_full_master = QPushButton("⚡  OPEN FULL MASTERING")
+        self.btn_open_full_master.setFixedHeight(44)
+        self.btn_open_full_master.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #48CAE4, stop:0.1 #00B4D8, stop:0.9 #0077B6, stop:1 #004466);
+                color: #FFFFFF;
+                border: 2px solid #0077B6;
+                border-top: 2px solid #48CAE4;
+                border-radius: 6px;
+                padding: 8px;
+                font-size: 13px;
+                font-weight: bold;
+                font-family: 'Menlo', monospace;
+                letter-spacing: 2px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #5AD8F0, stop:0.1 #48CAE4, stop:0.9 #00B4D8, stop:1 #0077B6);
+                border-color: #48CAE4;
+            }
+            QPushButton:pressed {
+                background: #004466;
+            }
+        """)
+        self.btn_open_full_master.setToolTip(
+            "Open full Ozone 12 mastering suite:\n"
+            "• Rotary knobs (Gain, Ceiling, Character, Upward, Soft Clip)\n"
+            "• IRC Sub-Mode selector\n"
+            "• BEFORE/AFTER Logic meters\n"
+            "• Vectorscope, Transfer Curve, Spectrum Analyzer\n"
+            "• Loudness History, WLM Plus meter\n"
+            "• Match EQ, A/B Compare, Undo/Redo\n"
+            "• AI Auto-Detect Genre")
+        self.btn_open_full_master.clicked.connect(self._open_master_module)
+        layout.addWidget(self.btn_open_full_master)
 
         layout.addStretch()
         parent_scroll.setWidget(panel)
