@@ -14,9 +14,22 @@
 
 ## Critical Files — Read Before Any Work
 
-1. **`docs/prd.md`** — Full PRD: 13 features, 5 epics, 30 stories with acceptance criteria
-2. **`docs/brief.md`** — Vision, tech philosophy, current state
-3. **`docs/claude-code-rules.md`** — Development rules, QA checklist, NEVER/ALWAYS rules
+1. **`docs/prd-phase2-integration.md`** — CURRENT PHASE: 19 integration stories (wire modules into GUI)
+2. **`docs/prd.md`** — Phase 1 PRD (COMPLETED: 30 stories, modules created)
+3. **`docs/brief.md`** — Vision, tech philosophy, current state
+4. **`docs/claude-code-rules.md`** — Development rules, QA checklist, NEVER/ALWAYS rules
+
+## ⚠️ PHASE 2 CRITICAL RULES
+
+```
+1. DO NOT create new .py files — all modules already exist
+2. Your job is ONLY to edit gui/main.py and modules/master/ui_panel.py 
+   to IMPORT and USE the existing modules
+3. Use try/except ImportError for every new import
+4. Test after EVERY story: python3 -c "from gui import LongPlayStudioV4"
+5. Run python3 -m pytest tests/ after every story
+6. The app must launch without crash after every story
+```
 
 ## RALP Loop — Read → Act → Lint → Push
 
