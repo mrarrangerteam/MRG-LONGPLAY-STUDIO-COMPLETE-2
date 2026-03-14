@@ -242,7 +242,7 @@ except ImportError:
 
 # Import Ozone 12 / Waves WLM meter widgets from Master Module
 try:
-    from modules.master.ui_panel import WavesWLMMeter, GainReductionHistoryWidget
+    from modules.master.ui_panel import WavesWLMMeter, GainReductionHistoryWidget, LogicChannelMeter
     _HAS_MASTER_WIDGETS = True
 except ImportError:
     _HAS_MASTER_WIDGETS = False
@@ -7569,6 +7569,13 @@ class LongPlayStudioV4(QMainWindow):
         else:
             self.right_gr_history = None
 
+        # ── V5.8: Logic Channel Strip BEFORE/AFTER Meters ──
+        if _HAS_MASTER_WIDGETS:
+            self.right_logic_meter = LogicChannelMeter(ceiling_db=-1.0)
+            layout.addWidget(self.right_logic_meter, alignment=Qt.AlignmentFlag.AlignCenter)
+        else:
+            self.right_logic_meter = None
+
         # ── Separator ──
         sep_gain = QFrame()
         sep_gain.setFixedHeight(2)
@@ -7852,6 +7859,25 @@ class LongPlayStudioV4(QMainWindow):
                     tp_right=tp_r,
                 )
 
+            # V5.8: Feed Logic Channel Strip BEFORE/AFTER meters
+            if hasattr(self, 'right_logic_meter') and self.right_logic_meter is not None:
+                tp_l = levels_db.get("left_peak_db", -70.0) if levels_db else peak_db
+                tp_r = levels_db.get("right_peak_db", -70.0) if levels_db else peak_db
+                rms_l = levels_db.get("left_rms_db", -70.0) if levels_db else peak_db - 6
+                rms_r = levels_db.get("right_rms_db", -70.0) if levels_db else peak_db - 6
+                # BEFORE = input signal (raw peaks)
+                self.right_logic_meter.set_before(
+                    l_peak=tp_l, r_peak=tp_r, l_rms=rms_l, r_rms=rms_r)
+                # AFTER = signal clamped by ceiling (simulates limiter output)
+                gain_db_v = getattr(self, '_right_gain_db', 0.0)
+                ceil_v = self.right_ceiling_spin.value() if hasattr(self, 'right_ceiling_spin') else -1.0
+                after_l = min(tp_l + gain_db_v, ceil_v)
+                after_r = min(tp_r + gain_db_v, ceil_v)
+                after_rms_l = min(rms_l + gain_db_v, ceil_v)
+                after_rms_r = min(rms_r + gain_db_v, ceil_v)
+                self.right_logic_meter.set_after(
+                    l_peak=after_l, r_peak=after_r, l_rms=after_rms_l, r_rms=after_rms_r)
+
             # V5.7: Feed GR to both WLM meter and GR history widget
             gain_db_val = getattr(self, '_right_gain_db', 0.0)
             ceiling_val = self.right_ceiling_spin.value() if hasattr(self, 'right_ceiling_spin') else -1.0
@@ -7919,10 +7945,13 @@ class LongPlayStudioV4(QMainWindow):
             self.right_gain_display.setStyleSheet(f"color: {color};")
 
     def _on_right_ceiling_changed(self, value: float):
-        """Output ceiling changed — update engine gain and re-render preview."""
+        """Output ceiling changed — update engine gain, Logic meter ceiling, and re-render preview."""
         gain_db = getattr(self, '_right_gain_db', 0.0)
         if hasattr(self, 'audio_engine'):
             self.audio_engine.set_gain(gain_db, value)
+        # V5.8: Sync ceiling to Logic Channel Meter
+        if hasattr(self, 'right_logic_meter') and self.right_logic_meter is not None:
+            self.right_logic_meter.set_ceiling(value)
         # Trigger preview re-render if gain > 0
         if gain_db > 0.01:
             if not hasattr(self, '_gain_apply_timer'):
