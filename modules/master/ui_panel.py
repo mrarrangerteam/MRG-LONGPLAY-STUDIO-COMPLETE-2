@@ -3152,6 +3152,13 @@ class MetersPanel(QFrame):
         self.live_gr_bar = None   # Replaced by history widget
         self.live_gr_val = None   # Replaced by history widget
 
+        layout.addWidget(self._groove_divider())
+
+        # ── V5.8 C-3: LOUDNESS HISTORY TIMELINE ──
+        from modules.widgets.loudness_history import LoudnessHistoryWidget
+        self.live_loudness_history = LoudnessHistoryWidget(target_lufs=-14.0)
+        layout.addWidget(self.live_loudness_history, alignment=Qt.AlignmentFlag.AlignCenter)
+
         # ── STAGE indicator (V5.5 — larger, more prominent) ──
         self.live_stage = QLabel("STAGE: IDLE")
         self.live_stage.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
@@ -3160,8 +3167,58 @@ class MetersPanel(QFrame):
         self.live_stage.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.live_stage)
 
+        # ── V5.8 C-4: Gain Trim + TP Limiter + CSV Export ──
+        c4_row = QHBoxLayout()
+        c4_row.setSpacing(4)
+
+        from modules.widgets.rotary_knob import OzoneRotaryKnob
+        self.wlm_gain_trim = OzoneRotaryKnob(
+            name="TRIM", min_val=-18.0, max_val=18.0, default=0.0,
+            unit="dB", decimals=1)
+        c4_row.addWidget(self.wlm_gain_trim)
+
+        ctrl_col = QVBoxLayout()
+        ctrl_col.setSpacing(2)
+        self.wlm_tp_limiter = QCheckBox("TP LIMIT")
+        self.wlm_tp_limiter.setChecked(True)
+        self.wlm_tp_limiter.setStyleSheet(f"color:#48CAE4; font-size:8px; font-weight:bold;")
+        ctrl_col.addWidget(self.wlm_tp_limiter)
+
+        self.wlm_csv_btn = QPushButton("CSV")
+        self.wlm_csv_btn.setFixedSize(40, 22)
+        self.wlm_csv_btn.setStyleSheet(f"""
+            QPushButton {{ background:#1A1A1E; border:1px solid #2A2A30; border-radius:3px;
+                color:#8E8A82; font-size:8px; font-weight:bold; }}
+            QPushButton:hover {{ color:#48CAE4; border-color:#0077B6; }}
+        """)
+        self.wlm_csv_btn.clicked.connect(self._export_loudness_csv)
+        ctrl_col.addWidget(self.wlm_csv_btn)
+        c4_row.addLayout(ctrl_col)
+        layout.addLayout(c4_row)
+
         layout.addStretch()
         self.stack.addWidget(page)
+
+    def _export_loudness_csv(self):
+        """Export loudness history to CSV file."""
+        if not hasattr(self, 'live_loudness_history'):
+            return
+        hist = self.live_loudness_history
+        if len(hist._momentary) == 0:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Loudness CSV", "loudness_log.csv", "CSV Files (*.csv)")
+        if not path:
+            return
+        import csv
+        with open(path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["sample", "momentary_lufs", "short_term_lufs", "integrated_lufs"])
+            for i in range(len(hist._momentary)):
+                m = hist._momentary[i] if i < len(hist._momentary) else -70.0
+                s = hist._short_term[i] if i < len(hist._short_term) else -70.0
+                it = hist._integrated[i] if i < len(hist._integrated) else -70.0
+                writer.writerow([i, f"{m:.1f}", f"{s:.1f}", f"{it:.1f}"])
 
     # ─── RESULT PAGE ──────────────────────────
     def _build_result_page(self):
@@ -3305,6 +3362,11 @@ class MetersPanel(QFrame):
         gr = abs(levels.get("gain_reduction_db", 0.0))
         if hasattr(self, 'live_gr_history') and self.live_gr_history is not None:
             self.live_gr_history.set_gr(gr)
+
+        # V5.8 C-3: Loudness History Timeline
+        if hasattr(self, 'live_loudness_history') and self.live_loudness_history is not None:
+            if stage not in ("pre_chain",):  # Only feed post-processing data
+                self.live_loudness_history.append_levels(lufs_m, lufs_s, lufs_i)
 
         # Stage
         stage_names = {
