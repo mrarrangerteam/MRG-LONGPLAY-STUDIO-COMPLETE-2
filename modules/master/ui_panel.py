@@ -115,6 +115,29 @@ try:
 except ImportError:
     _HAS_RT_MONITOR = False
 
+# ═══ Phase 3 Imports ═══
+
+# P3-7: Rotary Knob
+try:
+    from gui.widgets.rotary_knob import RotaryKnob
+    _HAS_ROTARY_KNOB = True
+except ImportError:
+    _HAS_ROTARY_KNOB = False
+
+# P3-8: Vectorscope
+try:
+    from gui.widgets.vectorscope import Vectorscope
+    _HAS_VECTORSCOPE = True
+except ImportError:
+    _HAS_VECTORSCOPE = False
+
+# P3-9: Transfer Curve
+try:
+    from gui.widgets.transfer_curve import TransferCurveWidget
+    _HAS_TRANSFER_CURVE = True
+except ImportError:
+    _HAS_TRANSFER_CURVE = False
+
 
 # ══════════════════════════════════════════════════
 #  WAVES-INSPIRED PRO AUDIO PLUGIN DESIGN SYSTEM
@@ -2840,6 +2863,15 @@ class MetersPanel(QFrame):
 
         self.stack.setCurrentIndex(self.MODE_LIVE)
 
+        # ── Phase 3 P3-1: Logic Level Meters (Before/After) ──
+        meter_row = QHBoxLayout()
+        meter_row.setSpacing(4)
+        self.logic_before = LogicLevelMeterPair("BEFORE")
+        self.logic_after = LogicLevelMeterPair("AFTER")
+        meter_row.addWidget(self.logic_before)
+        meter_row.addWidget(self.logic_after)
+        root_layout.addLayout(meter_row)
+
         # --- Target Indicator (always visible) ---
         root_layout.addWidget(self._groove_divider())
         self.target_frame = QFrame()
@@ -3425,6 +3457,134 @@ class PreviewTransportBar(QFrame):
         m = total_sec // 60
         s = total_sec % 60
         return f"{m}:{s:02d}"
+
+
+# ══════════════════════════════════════════════════
+#  P3-1: Logic Pro X Style Level Meter
+# ══════════════════════════════════════════════════
+class LogicLevelMeter(QWidget):
+    """
+    Vertical level meter strip — Logic Pro X channel strip style.
+    Green (-inf to -12 dB) → Yellow (-12 to -3 dB) → Red (-3 to 0 dB).
+    Peak hold line with 2-second decay. Clip indicator.
+    """
+
+    def __init__(self, label: str = "L", parent=None):
+        super().__init__(parent)
+        self._label = label
+        self._level_db: float = -60.0
+        self._peak_db: float = -60.0
+        self._clip: bool = False
+        self._ceiling: float = -1.0
+        self.setFixedWidth(24)
+        self.setMinimumHeight(200)
+
+        self._peak_timer = QTimer(self)
+        self._peak_timer.timeout.connect(self._decay_peak)
+        self._peak_timer.start(100)
+
+    def set_level(self, db: float) -> None:
+        self._level_db = max(-60.0, min(0.0, db))
+        if db > self._peak_db:
+            self._peak_db = db
+        if db > self._ceiling:
+            self._clip = True
+        self.update()
+
+    def reset_clip(self) -> None:
+        self._clip = False
+        self._peak_db = -60.0
+        self.update()
+
+    def _decay_peak(self) -> None:
+        self._peak_db = max(-60.0, self._peak_db - 1.0)
+        if self._peak_db < -55:
+            self._clip = False
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        bar_top = 16
+        bar_h = h - bar_top - 16
+
+        # background
+        p.fillRect(self.rect(), QColor("#0e0e14"))
+
+        # clip indicator
+        if self._clip:
+            p.setBrush(QColor("#ff3333"))
+        else:
+            p.setBrush(QColor("#331111"))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(w // 2 - 4, 3, 8, 8)
+
+        # meter background
+        p.fillRect(2, bar_top, w - 4, bar_h, QColor("#1a1a2e"))
+
+        # filled level
+        ratio = max(0.0, (self._level_db + 60.0) / 60.0)
+        fill_h = int(ratio * bar_h)
+        y_fill = bar_top + bar_h - fill_h
+
+        # gradient segments
+        for y in range(y_fill, bar_top + bar_h):
+            seg_ratio = 1.0 - (y - bar_top) / max(bar_h, 1)
+            if seg_ratio > 0.95:
+                color = QColor("#ff3333")  # red (> -3 dB)
+            elif seg_ratio > 0.8:
+                color = QColor("#ffcc00")  # yellow (-12 to -3)
+            else:
+                color = QColor("#00cc66")  # green
+            p.fillRect(3, y, w - 6, 1, color)
+
+        # peak hold
+        peak_ratio = max(0.0, (self._peak_db + 60.0) / 60.0)
+        peak_y = bar_top + int((1.0 - peak_ratio) * bar_h)
+        p.setPen(QPen(QColor("#ffffff"), 2))
+        p.drawLine(3, peak_y, w - 3, peak_y)
+
+        # label
+        p.setFont(QFont("Inter", 7, QFont.Weight.Bold))
+        p.setPen(QColor("#888899"))
+        p.drawText(QRectF(0, h - 14, w, 14), Qt.AlignmentFlag.AlignCenter, self._label)
+
+        # peak numeric
+        p.setFont(QFont("Courier New", 6))
+        p.setPen(QColor("#00d4aa"))
+        pk_str = f"{self._peak_db:.0f}" if self._peak_db > -55 else ""
+        p.drawText(QRectF(0, bar_top - 2, w, 10), Qt.AlignmentFlag.AlignCenter, pk_str)
+
+        p.end()
+
+
+class LogicLevelMeterPair(QWidget):
+    """Stereo L/R level meter pair with BEFORE/AFTER mode."""
+
+    def __init__(self, mode: str = "AFTER", parent=None):
+        super().__init__(parent)
+        from gui.utils.compat import QHBoxLayout, QLabel, QVBoxLayout
+        self._mode = mode
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        lbl = QLabel(mode)
+        lbl.setStyleSheet("color: #00d4aa; font-size: 7px; font-weight: bold; letter-spacing: 1px;")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl)
+
+        meter_row = QHBoxLayout()
+        meter_row.setSpacing(1)
+        self.meter_l = LogicLevelMeter("L")
+        self.meter_r = LogicLevelMeter("R")
+        meter_row.addWidget(self.meter_l)
+        meter_row.addWidget(self.meter_r)
+        layout.addLayout(meter_row)
+
+    def set_levels(self, left_db: float, right_db: float) -> None:
+        self.meter_l.set_level(left_db)
+        self.meter_r.set_level(right_db)
 
 
 # ══════════════════════════════════════════════════
@@ -4032,6 +4192,19 @@ class MasterPanel(QWidget):
         mix_group.setLayout(mix_layout)
         layout.addWidget(mix_group)
 
+        # ── Phase 3 P3-4/P3-9: Transfer Curve Widget ──
+        if _HAS_TRANSFER_CURVE:
+            tc_group = QGroupBox("TRANSFER CURVE")
+            tc_layout = QVBoxLayout()
+            self._transfer_curve = TransferCurveWidget()
+            self._transfer_curve.setMinimumHeight(180)
+            self._transfer_curve.set_params(
+                threshold=-16.0, ratio=2.5, knee=6.0, makeup=2.0
+            )
+            tc_layout.addWidget(self._transfer_curve)
+            tc_group.setLayout(tc_layout)
+            layout.addWidget(tc_group)
+
         layout.addWidget(HardwareDecoration(HardwareDecoration.MODE_VU_PANEL))
         return widget
 
@@ -4132,6 +4305,16 @@ class MasterPanel(QWidget):
 
         bass_group.setLayout(bass_layout)
         layout.addWidget(bass_group)
+
+        # ── Phase 3 P3-3/P3-8: Vectorscope display ──
+        if _HAS_VECTORSCOPE:
+            scope_group = QGroupBox("VECTORSCOPE")
+            scope_layout = QVBoxLayout()
+            self._vectorscope = Vectorscope()
+            self._vectorscope.setMinimumHeight(140)
+            scope_layout.addWidget(self._vectorscope)
+            scope_group.setLayout(scope_layout)
+            layout.addWidget(scope_group)
 
         layout.addWidget(HardwareDecoration(HardwareDecoration.MODE_VU_PANEL))
         return widget
@@ -4505,6 +4688,43 @@ class MasterPanel(QWidget):
         """)
         self.btn_measure.clicked.connect(self._on_measure_levels)
         layout.addWidget(self.btn_measure)
+
+        # ── Phase 3 P3-2/P3-7: Ozone-style rotary knobs for maximizer ──
+        if _HAS_ROTARY_KNOB:
+            knobs_group = QGroupBox("OZONE 12 CONTROLS")
+            knobs_layout = QHBoxLayout()
+            knobs_layout.setSpacing(4)
+
+            self._oz_gain_knob = RotaryKnob(
+                label="GAIN", min_val=0.0, max_val=20.0, default=0.0,
+                step=0.1, suffix=" dB", accent_color="#00d4aa")
+            self._oz_gain_knob.valueChanged.connect(
+                lambda v: (self.chain.maximizer.set_gain(v), self._schedule_auto_measure()))
+            knobs_layout.addWidget(self._oz_gain_knob)
+
+            self._oz_char_knob = RotaryKnob(
+                label="CHARACTER", min_val=0.0, max_val=10.0, default=0.0,
+                step=0.1, suffix="", accent_color="#00d4aa")
+            self._oz_char_knob.valueChanged.connect(
+                lambda v: setattr(self.chain.maximizer, 'character', v / 10.0))
+            knobs_layout.addWidget(self._oz_char_knob)
+
+            self._oz_upward_knob = RotaryKnob(
+                label="UPWARD", min_val=0.0, max_val=12.0, default=0.0,
+                step=0.1, suffix=" dB", accent_color="#00ccff")
+            self._oz_upward_knob.valueChanged.connect(
+                lambda v: self.chain.maximizer.set_upward_compress(v))
+            knobs_layout.addWidget(self._oz_upward_knob)
+
+            self._oz_softclip_knob = RotaryKnob(
+                label="SOFT CLIP", min_val=0.0, max_val=100.0, default=0.0,
+                step=1.0, suffix="%", decimals=0, accent_color="#ff8844")
+            self._oz_softclip_knob.valueChanged.connect(
+                lambda v: self.chain.maximizer.set_soft_clip(v > 0, v))
+            knobs_layout.addWidget(self._oz_softclip_knob)
+
+            knobs_group.setLayout(knobs_layout)
+            layout.addWidget(knobs_group)
 
         return widget
 

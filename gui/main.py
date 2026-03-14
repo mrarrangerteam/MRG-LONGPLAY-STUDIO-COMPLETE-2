@@ -1748,6 +1748,21 @@ class LongPlayStudioV4(QMainWindow):
         except Exception as e:
             print(f"[PHASE2] Speed ramp error: {e}")
 
+    def _on_production_pipeline(self) -> None:
+        """P3-6: Production Flow Pipeline wizard."""
+        steps = [
+            "1. IMPORT — Load audio tracks",
+            "2. AI DJ — Auto-order & arrange playlist",
+            "3. COMPILE — Crossfade & concatenate",
+            "4. MASTER — Ozone 12 mastering chain",
+            "5. HOOK EXTRACT — Extract hooks (before/after master)",
+            "6. VIDEO — Assemble video + overlays",
+            "7. EXPORT — Platform presets + loudness report",
+        ]
+        msg = "PRODUCTION PIPELINE\n\n" + "\n".join(steps)
+        msg += "\n\nCurrent step: Ready to import"
+        QMessageBox.information(self, "Production Pipeline", msg)
+
     def _on_position_changed(self, position_ms: int):
         """Handle playback position change"""
         try:
