@@ -40,8 +40,8 @@ from PyQt6.QtGui import (
 )
 import math
 
-# Import master modules
-from .chain import MasterChain
+# Import master modules — uses Rust backend if available, Python fallback otherwise
+from . import MasterChain
 # V5.5 REMOVED: realtime_engine.py deleted (root cause of audio artifacts)
 # All playback now uses offline rendering + QMediaPlayer (Export-Parity architecture)
 from .genre_profiles import (
