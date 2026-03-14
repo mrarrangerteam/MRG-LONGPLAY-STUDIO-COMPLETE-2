@@ -97,6 +97,10 @@ class Maximizer:
                 else:
                     self.irc_sub_mode = ""
 
+    def set_irc_sub_mode(self, sub_mode: str):
+        """Set IRC sub-mode directly (called from UI dropdown)."""
+        self.irc_sub_mode = sub_mode
+
     def get_effective_irc_key(self) -> str:
         """Get the actual IRC_MODES key to use (with sub-mode if applicable)."""
         subs = get_irc_sub_modes(self.irc_mode)

@@ -4234,6 +4234,8 @@ class MasterPanel(QWidget):
 
     # ─── MAXIMIZER VIEW — OZONE 12 STYLE ──────────────────────
     def _build_maximizer_view(self):
+        from modules.widgets.rotary_knob import OzoneRotaryKnob
+
         widget = QWidget()
         widget.setStyleSheet(f"background: #111114;")
         layout = QVBoxLayout(widget)
@@ -4293,6 +4295,27 @@ class MasterPanel(QWidget):
         top_row.addWidget(self.irc_mode_btn)
         layout.addLayout(top_row)
 
+        # V5.8 A-1: IRC Sub-Mode dropdown (visible only for IRC III/IV)
+        sub_row = QHBoxLayout()
+        sub_row.setSpacing(6)
+        self.irc_submode_label = QLabel("SUB-MODE")
+        self.irc_submode_label.setStyleSheet(f"color:{C_TEAL}; font-size:8px; letter-spacing:1px; font-weight:bold;")
+        sub_row.addWidget(self.irc_submode_label)
+        self.irc_submode_combo = QComboBox()
+        self.irc_submode_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: #1A1A1E; border: 1px solid {C_TEAL_DIM}; border-radius: 3px;
+                color: {C_TEAL_GLOW}; font-family: 'Menlo'; font-size: 10px;
+                font-weight: bold; padding: 2px 8px; min-width: 120px;
+            }}
+        """)
+        self.irc_submode_combo.currentTextChanged.connect(self._on_irc_submode_changed)
+        sub_row.addWidget(self.irc_submode_combo)
+        sub_row.addStretch()
+        self.irc_submode_label.setVisible(False)
+        self.irc_submode_combo.setVisible(False)
+        layout.addLayout(sub_row)
+
         # IRC description (subtle)
         self.irc_desc_label = QLabel(IRC_MODES.get("IRC 3 - Balanced", {}).get("description", ""))
         self.irc_desc_label.setWordWrap(True)
@@ -4300,123 +4323,91 @@ class MasterPanel(QWidget):
             f"color: #6B6B70; font-style: italic; font-size: 8px; padding: 0 0 2px 0;")
         layout.addWidget(self.irc_desc_label)
 
-        # ═══ MAIN AREA: Gain Dial + Output/Character + Meter ═══
-        main_row = QHBoxLayout()
-        main_row.setSpacing(12)
+        # ═══ MAIN AREA: Knobs Row — Gain (large) + Ceiling + Character ═══
+        knobs_row = QHBoxLayout()
+        knobs_row.setSpacing(8)
 
-        # ── LEFT: Large Gain Knob + dB Display ──
-        gain_col = QVBoxLayout()
-        gain_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        gain_col.setSpacing(4)
+        # Gain knob (large)
+        self.max_gain_knob = OzoneRotaryKnob(
+            name="GAIN", min_val=0.0, max_val=20.0, default=0.0,
+            unit="dB", decimals=1, large=True)
+        self.max_gain_knob.valueChanged.connect(self._on_gain_knob_changed)
+        knobs_row.addWidget(self.max_gain_knob, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        gain_lbl = QLabel("GAIN")
-        gain_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        gain_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:8px; letter-spacing:2px; font-weight:bold;")
-        gain_col.addWidget(gain_lbl)
+        # Ceiling knob
+        self.max_ceiling_knob = OzoneRotaryKnob(
+            name="CEILING", min_val=-3.0, max_val=-0.1, default=-1.0,
+            unit="dBTP", decimals=2)
+        self.max_ceiling_knob.valueChanged.connect(self._on_ceiling_knob_changed)
+        knobs_row.addWidget(self.max_ceiling_knob, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.max_gain_dial = QDial()
-        self.max_gain_dial.setRange(0, 200)  # V5.5.1: 0-20 dB (was 12 dB)
-        self.max_gain_dial.setValue(0)
-        self.max_gain_dial.setFixedSize(110, 110)
-        self.max_gain_dial.setNotchesVisible(True)
-        self.max_gain_dial.setStyleSheet(f"""
-            QDial {{
-                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
-                    fx:0.4, fy:0.4,
-                    stop:0 #2A2A30, stop:0.6 #1A1A1E,
-                    stop:0.85 #111114, stop:1 #0A0A0C);
-                border: 2px solid {C_TEAL_DIM};
-                border-radius: 55px;
-            }}
-        """)
-        self.max_gain_dial.valueChanged.connect(self._on_gain_changed)
-        gain_col.addWidget(self.max_gain_dial, alignment=Qt.AlignmentFlag.AlignCenter)
+        # Character knob
+        self.max_character_knob = OzoneRotaryKnob(
+            name="CHARACTER", min_val=0.0, max_val=10.0, default=3.0,
+            unit="", decimals=1)
+        self.max_character_knob.valueChanged.connect(self._on_character_knob_changed)
+        knobs_row.addWidget(self.max_character_knob, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.max_gain_display = QLabel("+0.0")
-        self.max_gain_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.max_gain_display.setFont(QFont("Menlo", 24, QFont.Weight.Bold))
-        self.max_gain_display.setStyleSheet(f"color: {C_TEAL_GLOW};")
-        gain_col.addWidget(self.max_gain_display)
+        # Upward Compress knob
+        self.max_upward_knob = OzoneRotaryKnob(
+            name="UPWARD", min_val=0.0, max_val=12.0, default=0.0,
+            unit="dB", decimals=1)
+        self.max_upward_knob.valueChanged.connect(self._on_upward_knob_changed)
+        knobs_row.addWidget(self.max_upward_knob, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        gain_unit = QLabel("dB")
-        gain_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        gain_unit.setStyleSheet(f"color:#6B6B70; font-size:9px;")
-        gain_col.addWidget(gain_unit)
+        # Soft Clip knob
+        self.max_softclip_knob = OzoneRotaryKnob(
+            name="SOFT CLIP", min_val=0.0, max_val=100.0, default=0.0,
+            unit="%", decimals=0)
+        self.max_softclip_knob.valueChanged.connect(self._on_softclip_knob_changed)
+        knobs_row.addWidget(self.max_softclip_knob, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        main_row.addLayout(gain_col, 3)
+        layout.addLayout(knobs_row)
 
-        # ── CENTER: Output Level + True Peak + Character + Learn ──
-        center_col = QVBoxLayout()
-        center_col.setSpacing(6)
-
-        # Output Level row
-        out_row = QHBoxLayout()
-        out_row.setSpacing(6)
-        out_lbl = QLabel("OUTPUT")
-        out_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:8px; letter-spacing:1.5px; font-weight:bold;")
-        out_row.addWidget(out_lbl)
-
-        self.max_ceiling = QDoubleSpinBox()
-        self.max_ceiling.setRange(-3.0, -0.1)
-        self.max_ceiling.setValue(-1.0)
-        self.max_ceiling.setSingleStep(0.01)
-        self.max_ceiling.setDecimals(2)
-        self.max_ceiling.setSuffix(" dBTP")
-        self.max_ceiling.setStyleSheet(f"""
-            QDoubleSpinBox {{
-                background: #1A1A1E; border: 1px solid #2A2A30; border-radius: 3px;
-                color: {C_TEAL_GLOW}; font-family: 'Menlo'; font-size: 12px;
-                font-weight: bold; padding: 2px 6px;
-            }}
-        """)
-        self.max_ceiling.valueChanged.connect(self._on_ceiling_changed)
-        out_row.addWidget(self.max_ceiling)
+        # ═══ Controls Row: True Peak + Transient Emphasis + Stereo Independence ═══
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setSpacing(12)
 
         self.max_true_peak = QCheckBox("TRUE PEAK")
         self.max_true_peak.setChecked(True)
         self.max_true_peak.setStyleSheet(f"color:{C_TEAL}; font-size:9px; font-weight:bold;")
         self.max_true_peak.toggled.connect(
             lambda v: setattr(self.chain.maximizer, 'true_peak', v))
-        out_row.addWidget(self.max_true_peak)
-        center_col.addLayout(out_row)
+        ctrl_row.addWidget(self.max_true_peak)
 
-        # Character slider: Smooth ←→ Aggressive
-        char_row = QHBoxLayout()
-        char_row.setSpacing(4)
-        s_lbl = QLabel("SMOOTH")
-        s_lbl.setStyleSheet("color:#6B6B70; font-size:7px; letter-spacing:1px;")
-        char_row.addWidget(s_lbl)
+        # Transient Emphasis: H/M/L buttons
+        te_lbl = QLabel("TRANSIENT")
+        te_lbl.setStyleSheet(f"color:{C_TEAL}; font-size:8px; letter-spacing:1px; font-weight:bold;")
+        ctrl_row.addWidget(te_lbl)
+        self.max_band_btns = []
+        for band in ["H", "M", "L"]:
+            btn = QPushButton(band)
+            btn.setCheckable(True)
+            btn.setFixedSize(26, 22)
+            btn.clicked.connect(lambda checked, b=band: self._on_transient_band(b))
+            self.max_band_btns.append(btn)
+            ctrl_row.addWidget(btn)
+        self.max_band_btns[1].setChecked(True)
+        self._update_band_button_styles()
 
-        self.max_character = QSlider(Qt.Orientation.Horizontal)
-        self.max_character.setRange(0, 100)
-        self.max_character.setValue(30)
-        self.max_character.setStyleSheet(f"""
-            QSlider::groove:horizontal {{
-                background: #1A1A1E; height: 4px; border-radius: 2px;
-            }}
-            QSlider::handle:horizontal {{
-                background: {C_TEAL}; width: 12px; height: 12px;
-                margin: -4px 0; border-radius: 6px;
-            }}
-            QSlider::sub-page:horizontal {{
-                background: {C_TEAL_DIM}; border-radius: 2px;
-            }}
-        """)
-        self.max_character.valueChanged.connect(self._on_character_changed)
-        char_row.addWidget(self.max_character)
+        # Stereo Independence checkbox
+        self.max_stereo_ind = QCheckBox("STEREO IND")
+        self.max_stereo_ind.setStyleSheet(f"color:{C_TEAL}; font-size:9px; font-weight:bold;")
+        self.max_stereo_ind.toggled.connect(
+            lambda v: setattr(self.chain.maximizer, 'stereo_independence', v))
+        ctrl_row.addWidget(self.max_stereo_ind)
+        ctrl_row.addStretch()
 
-        a_lbl = QLabel("AGGR")
-        a_lbl.setStyleSheet("color:#6B6B70; font-size:7px; letter-spacing:1px;")
-        char_row.addWidget(a_lbl)
+        # True Peak dBTP display
+        self.max_meter_db = QLabel("—  dB")
+        self.max_meter_db.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.max_meter_db.setStyleSheet(
+            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-size:9px; font-weight:bold;")
+        ctrl_row.addWidget(self.max_meter_db)
 
-        self.max_char_val = QLabel("3.00")
-        self.max_char_val.setFixedWidth(40)
-        self.max_char_val.setStyleSheet(
-            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-weight:bold; font-size:11px;")
-        char_row.addWidget(self.max_char_val)
-        center_col.addLayout(char_row)
+        layout.addLayout(ctrl_row)
 
-        # Tone chip buttons
+        # ═══ Tone chip buttons ═══
         tone_row = QHBoxLayout()
         tone_row.setSpacing(3)
         tone_lbl = QLabel("TONE")
@@ -4434,11 +4425,27 @@ class MasterPanel(QWidget):
             tone_row.addWidget(btn)
         self.tone_buttons[0].setChecked(True)
         self._update_tone_button_styles()
-        center_col.addLayout(tone_row)
+        layout.addLayout(tone_row)
 
-        # Learn Input Gain button + LUFS
-        learn_row = QHBoxLayout()
-        learn_row.setSpacing(6)
+        # ═══ GAIN REDUCTION — Ozone 12 Style History Widget ═══
+        self.max_gr_history = GainReductionHistoryWidget()
+        layout.addWidget(self.max_gr_history)
+
+        # Keep legacy references for backward compat
+        self.max_gr_bar = None
+        self.max_gr_label = None
+        # Legacy compat: create hidden references for old handler code
+        self.max_gain_display = QLabel("+0.0")
+        self.max_gain_display.setVisible(False)
+        self.max_char_val = QLabel("3.00")
+        self.max_char_val.setVisible(False)
+        self.max_lufs_label = QLabel("— LUFS")
+        self.max_lufs_label.setStyleSheet(
+            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-weight:bold; font-size:10px;")
+
+        # Learn + Measure row
+        action_row = QHBoxLayout()
+        action_row.setSpacing(6)
         self.btn_learn_gain = QPushButton("LEARN INPUT GAIN")
         self.btn_learn_gain.setFixedHeight(26)
         self.btn_learn_gain.setStyleSheet(f"""
@@ -4450,159 +4457,65 @@ class MasterPanel(QWidget):
             QPushButton:hover {{ background: {C_TEAL_DIM}; color: #FFFFFF; }}
         """)
         self.btn_learn_gain.clicked.connect(self._on_learn_gain)
-        learn_row.addWidget(self.btn_learn_gain)
+        action_row.addWidget(self.btn_learn_gain)
+        action_row.addWidget(self.max_lufs_label)
 
-        self.max_lufs_label = QLabel("— LUFS")
-        self.max_lufs_label.setStyleSheet(
-            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-weight:bold; font-size:10px;")
-        learn_row.addWidget(self.max_lufs_label)
-        learn_row.addStretch()
-        center_col.addLayout(learn_row)
-
-        main_row.addLayout(center_col, 4)
-
-        # ── RIGHT: Dual L/R Level Meter (Logic Pro / Ozone 12 style) ──
-        meter_col = QVBoxLayout()
-        meter_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        meter_col.setSpacing(2)
-
-        # V5.5: Removed duplicate LEVEL meter (OzoneLevelMeter)
-        # Metering now shows ONLY in MINI METER (main GUI) + REAL-TIME METERING panel
-        # Keep True Peak dBTP display here in Maximizer section
-        self.max_meter_db = QLabel("—  dB")
-        self.max_meter_db.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.max_meter_db.setStyleSheet(
-            f"color:{C_TEAL_GLOW}; font-family:'Menlo'; font-size:9px; font-weight:bold;")
-        meter_col.addWidget(self.max_meter_db)
-
-        main_row.addLayout(meter_col, 2)
-        layout.addLayout(main_row)
-
-        # ═══ GAIN REDUCTION — Ozone 12 Style History Widget ═══
-        self.max_gr_history = GainReductionHistoryWidget()
-        layout.addWidget(self.max_gr_history)
-
-        # Keep legacy references for backward compat with _apply_meter_result
-        self.max_gr_bar = None  # Replaced by history widget
-        self.max_gr_label = None  # Replaced by history widget
-
-        # ═══ ADVANCED section (compact grid) ═══
-        adv_frame = QFrame()
-        adv_frame.setStyleSheet(f"background:#141416; border:1px solid #1E1E22; border-radius:4px;")
-        adv_layout = QGridLayout(adv_frame)
-        adv_layout.setContentsMargins(8, 6, 8, 6)
-        adv_layout.setSpacing(4)
-
-        adv_title = QLabel("ADVANCED")
-        adv_title.setStyleSheet(f"color:#6B6B70; font-size:7px; letter-spacing:2px; font-weight:bold; border:none;")
-        adv_layout.addWidget(adv_title, 0, 0, 1, 4)
-
-        _spin_ss = f"""
-            QSpinBox, QDoubleSpinBox {{
-                background:#1A1A1E; border:1px solid #2A2A30; border-radius:2px;
-                color:{C_TEAL_GLOW}; font-family:'Menlo'; font-size:10px; padding:1px 3px;
-            }}
-        """
-
-        # Row 1: Upward Compress + Soft Clip
-        _lbl = lambda t: self._ozone_label(t)
-        adv_layout.addWidget(_lbl("UPWARD"), 1, 0)
-        self.max_upward = QDoubleSpinBox()
-        self.max_upward.setRange(0.0, 12.0)
-        self.max_upward.setValue(0.0)
-        self.max_upward.setSingleStep(0.5)
-        self.max_upward.setSuffix(" dB")
-        self.max_upward.setStyleSheet(_spin_ss)
-        self.max_upward.valueChanged.connect(
-            lambda v: (self.chain.maximizer.set_upward_compress(v), self._schedule_auto_measure()))
-        adv_layout.addWidget(self.max_upward, 1, 1)
-
-        self.max_softclip_chk = QCheckBox("SOFT CLIP")
-        self.max_softclip_chk.setStyleSheet(f"color:{C_TEAL}; font-size:9px; font-weight:bold; border:none;")
-        self.max_softclip_chk.toggled.connect(self._on_softclip_toggled)
-        adv_layout.addWidget(self.max_softclip_chk, 1, 2)
-
-        self.max_softclip_pct = QSpinBox()
-        self.max_softclip_pct.setRange(0, 100)
-        self.max_softclip_pct.setValue(0)
-        self.max_softclip_pct.setSuffix(" %")
-        self.max_softclip_pct.setStyleSheet(_spin_ss)
-        self.max_softclip_pct.valueChanged.connect(self._on_softclip_pct_changed)
-        adv_layout.addWidget(self.max_softclip_pct, 1, 3)
-
-        # Row 2: Transient Emphasis + H/M/L
-        adv_layout.addWidget(_lbl("TRANSIENT"), 2, 0)
-        self.max_transient = QSpinBox()
-        self.max_transient.setRange(0, 100)
-        self.max_transient.setValue(0)
-        self.max_transient.setSuffix(" %")
-        self.max_transient.setStyleSheet(_spin_ss)
-        self.max_transient.valueChanged.connect(self._on_transient_changed)
-        adv_layout.addWidget(self.max_transient, 2, 1)
-
-        band_row = QHBoxLayout()
-        band_row.setSpacing(2)
-        self.max_band_btns = []
-        for band in ["L", "M", "H"]:
-            btn = QPushButton(band)
-            btn.setCheckable(True)
-            btn.setFixedSize(26, 22)
-            btn.clicked.connect(lambda checked, b=band: self._on_transient_band(b))
-            self.max_band_btns.append(btn)
-            band_row.addWidget(btn)
-        self.max_band_btns[1].setChecked(True)
-        self._update_band_button_styles()
-        band_w = QWidget()
-        band_w.setStyleSheet("border:none;")
-        band_w.setLayout(band_row)
-        adv_layout.addWidget(band_w, 2, 2, 1, 2)
-
-        # Row 3: Stereo Independence
-        adv_layout.addWidget(_lbl("STEREO IND"), 3, 0)
-        si_row = QHBoxLayout()
-        si_row.setSpacing(3)
-        t_lbl = QLabel("T:")
-        t_lbl.setStyleSheet(f"color:#6B6B70; font-size:8px; border:none;")
-        si_row.addWidget(t_lbl)
-        self.max_si_transient = QSpinBox()
-        self.max_si_transient.setRange(0, 100)
-        self.max_si_transient.setValue(0)
-        self.max_si_transient.setSuffix("%")
-        self.max_si_transient.setStyleSheet(_spin_ss)
-        self.max_si_transient.valueChanged.connect(self._on_stereo_ind_changed)
-        si_row.addWidget(self.max_si_transient)
-        s_lbl2 = QLabel("S:")
-        s_lbl2.setStyleSheet(f"color:#6B6B70; font-size:8px; border:none;")
-        si_row.addWidget(s_lbl2)
-        self.max_si_sustain = QSpinBox()
-        self.max_si_sustain.setRange(0, 100)
-        self.max_si_sustain.setValue(0)
-        self.max_si_sustain.setSuffix("%")
-        self.max_si_sustain.setStyleSheet(_spin_ss)
-        self.max_si_sustain.valueChanged.connect(self._on_stereo_ind_changed)
-        si_row.addWidget(self.max_si_sustain)
-        si_w = QWidget()
-        si_w.setStyleSheet("border:none;")
-        si_w.setLayout(si_row)
-        adv_layout.addWidget(si_w, 3, 1, 1, 3)
-
-        layout.addWidget(adv_frame)
-
-        # ═══ Measure Button (Ozone teal) ═══
-        self.btn_measure = QPushButton("⟳  MEASURE LEVELS")
-        self.btn_measure.setFixedHeight(30)
+        self.btn_measure = QPushButton("⟳  MEASURE")
+        self.btn_measure.setFixedHeight(26)
         self.btn_measure.setStyleSheet(f"""
             QPushButton {{
                 background: #1A1A1E; border: 1px solid {C_TEAL_DIM};
-                border-radius: 4px; color: {C_TEAL}; font-weight: bold;
-                font-size: 10px; letter-spacing: 1px;
+                border-radius: 3px; color: {C_TEAL}; font-weight: bold;
+                font-size: 9px; padding: 3px 10px;
             }}
             QPushButton:hover {{ background: {C_TEAL_DIM}; color: #FFFFFF; }}
         """)
         self.btn_measure.clicked.connect(self._on_measure_levels)
-        layout.addWidget(self.btn_measure)
+        action_row.addWidget(self.btn_measure)
+        action_row.addStretch()
+        layout.addLayout(action_row)
 
         return widget
+
+    # V5.8 A-3: Rotary knob handlers (float-based, replacing int-based)
+    def _on_gain_knob_changed(self, gain_db: float):
+        """OzoneRotaryKnob Gain changed (0.0-20.0 dB direct)."""
+        self.chain.maximizer.set_gain(gain_db)
+        self.max_gain_display.setText(f"+{gain_db:.1f}")
+        volume = min(3.0, 0.5 + gain_db / 20.0 * 2.5)
+        if hasattr(self, '_audio_output_master'):
+            self._audio_output_master.setVolume(volume)
+        if hasattr(self, '_audio_output_bypass'):
+            self._audio_output_bypass.setVolume(volume)
+        self._schedule_auto_measure()
+
+    def _on_ceiling_knob_changed(self, value: float):
+        """OzoneRotaryKnob Ceiling changed."""
+        self.chain.maximizer.set_ceiling(value)
+        self._schedule_auto_measure()
+
+    def _on_character_knob_changed(self, value: float):
+        """OzoneRotaryKnob Character changed (0.0-10.0 direct)."""
+        self.chain.maximizer.set_character(value)
+        self.max_char_val.setText(f"{value:.2f}")
+        self._schedule_auto_measure()
+
+    def _on_upward_knob_changed(self, value: float):
+        """OzoneRotaryKnob Upward Compress changed."""
+        self.chain.maximizer.set_upward_compress(value)
+        self._schedule_auto_measure()
+
+    def _on_softclip_knob_changed(self, value: float):
+        """OzoneRotaryKnob Soft Clip changed (0-100%)."""
+        pct = int(value)
+        self.chain.maximizer.set_soft_clip(pct > 0, pct)
+        self._schedule_auto_measure()
+
+    def _on_irc_submode_changed(self, text: str):
+        """IRC sub-mode combo changed."""
+        if text and hasattr(self.chain.maximizer, 'set_irc_sub_mode'):
+            self.chain.maximizer.set_irc_sub_mode(text)
+        self._schedule_auto_measure()
 
     def _ozone_label(self, text):
         """Create a small teal label for Ozone 12 style."""
@@ -4916,7 +4829,8 @@ class MasterPanel(QWidget):
             self.chain.set_platform(platform)
             target = PLATFORM_TARGETS[platform]
             self.meters.update_target(target["target_lufs"], target["true_peak"], platform)
-            self.max_ceiling.setValue(target["true_peak"])
+            if hasattr(self, 'max_ceiling_knob'):
+                self.max_ceiling_knob.setValue(target["true_peak"])
 
     def _on_intensity_changed(self, value: int):
         self.chain.intensity = value
@@ -5003,20 +4917,21 @@ class MasterPanel(QWidget):
     def _sync_maximizer_ui(self):
         """Sync maximizer UI controls from chain state."""
         mx = self.chain.maximizer
-        if hasattr(self, 'max_gain_dial'):
-            self.max_gain_dial.blockSignals(True)
-            self.max_gain_dial.setValue(int(mx.gain_db * 10))
-            self.max_gain_dial.blockSignals(False)
+        # V5.8: Sync OzoneRotaryKnob widgets
+        if hasattr(self, 'max_gain_knob'):
+            self.max_gain_knob.blockSignals(True)
+            self.max_gain_knob.setValue(mx.gain_db)
+            self.max_gain_knob.blockSignals(False)
         if hasattr(self, 'max_gain_display'):
             self.max_gain_display.setText(f"+{mx.gain_db:.1f}")
-        if hasattr(self, 'max_ceiling'):
-            self.max_ceiling.blockSignals(True)
-            self.max_ceiling.setValue(mx.ceiling)
-            self.max_ceiling.blockSignals(False)
-        if hasattr(self, 'max_character'):
-            self.max_character.blockSignals(True)
-            self.max_character.setValue(int(mx.character * 10))
-            self.max_character.blockSignals(False)
+        if hasattr(self, 'max_ceiling_knob'):
+            self.max_ceiling_knob.blockSignals(True)
+            self.max_ceiling_knob.setValue(mx.ceiling)
+            self.max_ceiling_knob.blockSignals(False)
+        if hasattr(self, 'max_character_knob'):
+            self.max_character_knob.blockSignals(True)
+            self.max_character_knob.setValue(mx.character)
+            self.max_character_knob.blockSignals(False)
         if hasattr(self, 'max_char_val'):
             self.max_char_val.setText(f"{mx.character:.2f}")
         if hasattr(self, 'irc_mode_btn'):
@@ -5026,22 +4941,14 @@ class MasterPanel(QWidget):
                 self.irc_mode_btn.setText(f"{mode} — {sub}  ▾")
             else:
                 self.irc_mode_btn.setText(f"{mode}  ▾")
-        if hasattr(self, 'max_transient'):
-            self.max_transient.blockSignals(True)
-            self.max_transient.setValue(mx.transient_emphasis_pct)
-            self.max_transient.blockSignals(False)
-        if hasattr(self, 'max_upward'):
-            self.max_upward.blockSignals(True)
-            self.max_upward.setValue(mx.upward_compress_db)
-            self.max_upward.blockSignals(False)
-        if hasattr(self, 'max_softclip_chk'):
-            self.max_softclip_chk.blockSignals(True)
-            self.max_softclip_chk.setChecked(mx.soft_clip_enabled)
-            self.max_softclip_chk.blockSignals(False)
-        if hasattr(self, 'max_softclip_pct'):
-            self.max_softclip_pct.blockSignals(True)
-            self.max_softclip_pct.setValue(mx.soft_clip_pct)
-            self.max_softclip_pct.blockSignals(False)
+        if hasattr(self, 'max_upward_knob'):
+            self.max_upward_knob.blockSignals(True)
+            self.max_upward_knob.setValue(mx.upward_compress_db)
+            self.max_upward_knob.blockSignals(False)
+        if hasattr(self, 'max_softclip_knob'):
+            self.max_softclip_knob.blockSignals(True)
+            self.max_softclip_knob.setValue(mx.soft_clip_pct)
+            self.max_softclip_knob.blockSignals(False)
 
     def _on_eq_preset_changed(self, preset: str):
         self.chain.equalizer.load_tone_preset(preset)
@@ -5228,6 +5135,23 @@ class MasterPanel(QWidget):
             key = mode
         desc = IRC_MODES.get(key, IRC_MODES.get(mode, {})).get("description", "")
         self.irc_desc_label.setText(desc)
+
+        # V5.8 A-1: Update IRC sub-mode dropdown
+        mode_data = IRC_MODES.get(mode, {})
+        sub_modes = mode_data.get("sub_modes", [])
+        if sub_modes and hasattr(self, 'irc_submode_combo'):
+            self.irc_submode_combo.blockSignals(True)
+            self.irc_submode_combo.clear()
+            self.irc_submode_combo.addItems(sub_modes)
+            if sub_mode and sub_mode in sub_modes:
+                self.irc_submode_combo.setCurrentText(sub_mode)
+            self.irc_submode_combo.blockSignals(False)
+            self.irc_submode_label.setVisible(True)
+            self.irc_submode_combo.setVisible(True)
+        elif hasattr(self, 'irc_submode_combo'):
+            self.irc_submode_label.setVisible(False)
+            self.irc_submode_combo.setVisible(False)
+
         self._schedule_auto_measure()
         print(f"[MAXIMIZER UI] IRC set: {mode} / {sub_mode}")
 
@@ -5323,7 +5247,10 @@ class MasterPanel(QWidget):
                 if lufs is not None:
                     self.max_lufs_label.setText(f"{lufs:.1f} LUFS")
                 if suggested is not None:
-                    self.max_gain_dial.setValue(int(suggested * 10))
+                    if hasattr(self, 'max_gain_knob'):
+                        self.max_gain_knob.setValue(suggested)
+                    elif hasattr(self, 'max_gain_dial'):
+                        self.max_gain_dial.setValue(int(suggested * 10))
                     print(f"[MAXIMIZER UI] Learned: {lufs:.1f} LUFS → suggested gain +{suggested:.1f} dB")
 
             QTimer.singleShot(0, _update_ui)
@@ -6229,10 +6156,10 @@ class MasterPanel(QWidget):
                 pass
 
             # Ceiling
-            self.max_ceiling.blockSignals(True)
-            self.max_ceiling.setValue(self.chain.maximizer.ceiling)
-            self.max_ceiling.blockSignals(False)
-            # max_ceiling_display removed in Ozone 12 redesign — spinbox is the display
+            if hasattr(self, 'max_ceiling_knob'):
+                self.max_ceiling_knob.blockSignals(True)
+                self.max_ceiling_knob.setValue(self.chain.maximizer.ceiling)
+                self.max_ceiling_knob.blockSignals(False)
 
             # EQ bands
             for i, band in enumerate(self.chain.equalizer.bands):
