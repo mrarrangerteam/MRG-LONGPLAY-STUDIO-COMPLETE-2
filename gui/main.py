@@ -1226,6 +1226,17 @@ class LongPlayStudioV4(QMainWindow):
             transport_layout.addWidget(razor_btn)
             self._razor_btn = razor_btn
 
+        # ── Phase 4 F-6: Pipeline button ──
+        pipeline_btn = QPushButton("⚡ Pipeline")
+        pipeline_btn.setStyleSheet(f"QPushButton {{ background: {Colors.BG_TERTIARY}; color: #00d4aa; "
+                                   f"border: 1px solid #00d4aa; border-radius: 4px; padding: 4px 10px; "
+                                   f"font-size: 11px; font-weight: bold; }} "
+                                   f"QPushButton:hover {{ background: #00d4aa; color: #1a1a2e; }}")
+        pipeline_btn.setFixedWidth(90)
+        pipeline_btn.setToolTip("Open Production Pipeline wizard")
+        pipeline_btn.clicked.connect(self._on_production_pipeline)
+        transport_layout.addWidget(pipeline_btn)
+
         # ── Phase 2: I-12 Text tool button ──
         if _HAS_TEXT_OVERLAY:
             text_btn = QPushButton("T Text")
@@ -1749,19 +1760,16 @@ class LongPlayStudioV4(QMainWindow):
             print(f"[PHASE2] Speed ramp error: {e}")
 
     def _on_production_pipeline(self) -> None:
-        """P3-6: Production Flow Pipeline wizard."""
-        steps = [
-            "1. IMPORT — Load audio tracks",
-            "2. AI DJ — Auto-order & arrange playlist",
-            "3. COMPILE — Crossfade & concatenate",
-            "4. MASTER — Ozone 12 mastering chain",
-            "5. HOOK EXTRACT — Extract hooks (before/after master)",
-            "6. VIDEO — Assemble video + overlays",
-            "7. EXPORT — Platform presets + loudness report",
-        ]
-        msg = "PRODUCTION PIPELINE\n\n" + "\n".join(steps)
-        msg += "\n\nCurrent step: Ready to import"
-        QMessageBox.information(self, "Production Pipeline", msg)
+        """F-6: Production Flow Pipeline wizard dialog."""
+        try:
+            dlg = _ProductionPipelineDialog(self)
+            dlg.exec()
+        except Exception as e:
+            print(f"[PHASE4] Pipeline dialog error: {e}")
+            # Fallback message
+            QMessageBox.information(self, "Production Pipeline",
+                "1. IMPORT → 2. AI DJ → 3. COMPILE → 4. MASTER → "
+                "5. HOOK EXTRACT → 6. VIDEO → 7. EXPORT")
 
     def _on_position_changed(self, position_ms: int):
         """Handle playback position change"""
@@ -6761,6 +6769,129 @@ class LongPlayStudioV4(QMainWindow):
     def _get_video_duration(self, path: str) -> float:
         """Get video duration"""
         return self._get_audio_duration(path)
+
+
+# ==================== Phase 4 F-6: Production Pipeline Dialog ====================
+
+
+class _ProductionPipelineDialog(QDialog):
+    """Step-by-step production pipeline wizard."""
+
+    _STEPS = [
+        ("1. IMPORT", "Load audio tracks into playlist"),
+        ("2. AI DJ", "Auto-order & arrange playlist"),
+        ("3. COMPILE", "Crossfade & concatenate tracks"),
+        ("4. MASTER", "Ozone 12 mastering chain"),
+        ("5. HOOK EXTRACT", "Extract hooks (before/after master)"),
+        ("6. VIDEO", "Assemble video + text + transitions"),
+        ("7. EXPORT", "Platform presets + loudness report"),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Production Pipeline")
+        self.setMinimumSize(500, 400)
+        self.setStyleSheet("background: #1a1a2e; color: #ffffff;")
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        title = QLabel("PRODUCTION PIPELINE")
+        title.setStyleSheet("color: #00d4aa; font-size: 16px; font-weight: bold; letter-spacing: 2px;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        self._status_labels = []
+        self._action_btns = []
+
+        for i, (name, desc) in enumerate(self._STEPS):
+            row = QHBoxLayout()
+
+            status = QLabel("⬜")
+            status.setFixedWidth(24)
+            status.setStyleSheet("font-size: 14px;")
+            self._status_labels.append(status)
+            row.addWidget(status)
+
+            info = QVBoxLayout()
+            n = QLabel(name)
+            n.setStyleSheet("color: #00d4aa; font-size: 12px; font-weight: bold;")
+            info.addWidget(n)
+            d = QLabel(desc)
+            d.setStyleSheet("color: #888899; font-size: 10px;")
+            info.addWidget(d)
+
+            # F-8: Hook extract radio option
+            if "HOOK" in name:
+                from gui.utils.compat import QHBoxLayout as QHL
+                radio_row = QHL()
+                radio_row.setSpacing(10)
+                lbl = QLabel("Extract from:")
+                lbl.setStyleSheet("color: #888899; font-size: 9px;")
+                radio_row.addWidget(lbl)
+                self._hook_original = QCheckBox("Original")
+                self._hook_original.setChecked(True)
+                self._hook_original.setStyleSheet("color: #cccccc; font-size: 9px;")
+                radio_row.addWidget(self._hook_original)
+                self._hook_mastered = QCheckBox("Mastered")
+                self._hook_mastered.setStyleSheet("color: #00d4aa; font-size: 9px;")
+                radio_row.addWidget(self._hook_mastered)
+                radio_row.addStretch()
+                info.addLayout(radio_row)
+
+            row.addLayout(info, 1)
+
+            btn = QPushButton("RUN")
+            btn.setFixedSize(60, 28)
+            btn.setStyleSheet(
+                "QPushButton { background: #2a2a44; color: #00d4aa; border: 1px solid #00d4aa; "
+                "border-radius: 4px; font-weight: bold; font-size: 10px; } "
+                "QPushButton:hover { background: #00d4aa; color: #1a1a2e; }")
+            btn.clicked.connect(lambda checked, idx=i: self._run_step(idx))
+            self._action_btns.append(btn)
+            row.addWidget(btn)
+
+            layout.addLayout(row)
+
+        layout.addStretch()
+
+        close_btn = QPushButton("CLOSE")
+        close_btn.setStyleSheet(
+            "QPushButton { background: #2a2a44; color: #ffffff; border: 1px solid #444; "
+            "border-radius: 4px; padding: 8px; font-weight: bold; } "
+            "QPushButton:hover { background: #444; }")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+    def _run_step(self, idx: int) -> None:
+        self._status_labels[idx].setText("⏳")
+        self._status_labels[idx].repaint()
+        QApplication.processEvents()
+
+        parent = self.parent()
+        try:
+            if idx == 0:
+                if parent and hasattr(parent, '_add_audio_files'):
+                    parent._add_audio_files()
+            elif idx == 1:
+                if parent and hasattr(parent, '_open_ai_dj'):
+                    parent._open_ai_dj()
+            elif idx == 3:
+                if parent and hasattr(parent, '_open_master'):
+                    parent._open_master()
+            elif idx == 4:
+                if parent and hasattr(parent, '_open_hook_extractor'):
+                    parent._open_hook_extractor()
+            elif idx == 5:
+                if parent and hasattr(parent, '_add_video_files'):
+                    parent._add_video_files()
+            elif idx == 6:
+                if parent and hasattr(parent, '_export_video'):
+                    parent._export_video()
+        except Exception as e:
+            print(f"[PIPELINE] Step {idx} error: {e}")
+
+        self._status_labels[idx].setText("✅")
 
 
 # ==================== License Dialog ====================

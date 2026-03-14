@@ -5244,6 +5244,35 @@ class MasterPanel(QWidget):
         self.chain.dynamics.single_band.parallel_mix = mix
         self.dyn_mix_val.setText(f"{value}%")
 
+    def _update_transfer_curve(self) -> None:
+        """F-4: Update transfer curve widget from current dynamics parameters."""
+        if not hasattr(self, '_transfer_curve') or not self._transfer_curve:
+            return
+        try:
+            band = self.chain.dynamics.single_band
+            self._transfer_curve.set_params(
+                threshold=band.threshold,
+                ratio=band.ratio,
+                knee=band.knee,
+                makeup=band.makeup,
+            )
+        except Exception:
+            pass
+
+    def _update_ozone_knobs_from_chain(self) -> None:
+        """F-5: Update all Ozone rotary knobs from chain state (bidirectional sync)."""
+        try:
+            if hasattr(self, '_oz_gain_knob'):
+                self._oz_gain_knob.set_value(getattr(self.chain.maximizer, 'gain_db', 0.0))
+            if hasattr(self, '_oz_char_knob'):
+                self._oz_char_knob.set_value(getattr(self.chain.maximizer, 'character', 0.0) * 10.0)
+            if hasattr(self, '_oz_upward_knob'):
+                self._oz_upward_knob.set_value(getattr(self.chain.maximizer, 'upward_compress_db', 0.0))
+            if hasattr(self, '_oz_softclip_knob'):
+                self._oz_softclip_knob.set_value(getattr(self.chain.maximizer, 'soft_clip_pct', 0.0))
+        except Exception:
+            pass
+
     def _on_dyn_preset_changed(self, preset: str):
         self.chain.dynamics.load_preset(preset)
         band = self.chain.dynamics.single_band
@@ -5261,6 +5290,8 @@ class MasterPanel(QWidget):
             self.dyn_curve.setRelease(band.release)
             self.dyn_curve.setMakeup(band.makeup)
             self.dyn_curve.blockSignals(False)
+        # F-4: Update transfer curve
+        self._update_transfer_curve()
 
     def _on_dyn_curve_threshold_changed(self, db: float):
         """Called when user drags threshold line on curve widget"""
@@ -5271,6 +5302,7 @@ class MasterPanel(QWidget):
                 self.dyn_knobs['threshold'].blockSignals(False)
             if hasattr(self.chain, 'dynamics') and hasattr(self.chain.dynamics, 'single_band'):
                 setattr(self.chain.dynamics.single_band, 'threshold', db)
+            self._update_transfer_curve()  # F-4
         except Exception as e:
             print(f"[MASTER UI] _on_dyn_curve_threshold_changed error: {e}")
 
@@ -6090,6 +6122,10 @@ class MasterPanel(QWidget):
                 self._call_on_main.emit(lambda: self._update_master_progress(40, "APPLYING SETTINGS..."))
                 try:
                     self.chain.apply_recommendation(rec)
+                    # F-5: Update Ozone knobs after recommendation
+                    self._call_on_main.emit(self._update_ozone_knobs_from_chain)
+                    # F-4: Update transfer curve after recommendation
+                    self._call_on_main.emit(self._update_transfer_curve)
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
@@ -6463,11 +6499,78 @@ class MasterPanel(QWidget):
         lufs_int = latest.get("lufs_integrated")
         if lufs_int is not None and lufs_int > -70 and hasattr(self, 'max_lufs_label'):
             self.max_lufs_label.setText(f"{lufs_int:.1f} LUFS")
+            self._last_lufs = lufs_int
 
         # Update GR from chain meter data — feed history widget
         gr_db = abs(latest.get("gain_reduction_db", 0.0))
         if hasattr(self, 'max_gr_history') and self.max_gr_history is not None:
             self.max_gr_history.set_gr(gr_db)
+
+        # ═══ Phase 4: Wire real data to all widgets ═══
+
+        left_peak = latest.get("left_peak_db", -60.0)
+        right_peak = latest.get("right_peak_db", -60.0)
+        left_rms = latest.get("left_rms_db", -60.0)
+        right_rms = latest.get("right_rms_db", -60.0)
+        tp_l = latest.get("true_peak_l", left_peak)
+        tp_r = latest.get("true_peak_r", right_peak)
+        self._last_tp = max(tp_l, tp_r)
+
+        # F-1: Wire Level Meters to chain processing
+        if hasattr(self, 'meters'):
+            if hasattr(self.meters, 'logic_before'):
+                # Input levels (before processing)
+                in_l = latest.get("input_left_db", left_rms - 3)
+                in_r = latest.get("input_right_db", right_rms - 3)
+                self.meters.logic_before.set_levels(in_l, in_r)
+            if hasattr(self.meters, 'logic_after'):
+                # Output levels (after processing)
+                self.meters.logic_after.set_levels(left_rms, right_rms)
+
+        # F-2: Wire Spectrum Analyzer to audio data
+        samples = latest.get("samples")
+        if samples is not None and hasattr(self, '_spectrum_analyzer') and self._spectrum_analyzer:
+            try:
+                import numpy as np
+                if isinstance(samples, (list, tuple)):
+                    samples = np.array(samples, dtype=np.float64)
+                if len(samples) >= 4096:
+                    sr = latest.get("sample_rate", 44100)
+                    self._spectrum_analyzer.feed_samples(samples, sr)
+                    if not self._spectrum_analyzer._timer.isActive():
+                        self._spectrum_analyzer.start()
+            except Exception:
+                pass
+
+        # F-3: Wire Vectorscope to audio playback
+        left_samples = latest.get("left_samples")
+        right_samples = latest.get("right_samples")
+        if left_samples is not None and right_samples is not None:
+            if hasattr(self, '_vectorscope') and self._vectorscope:
+                try:
+                    import numpy as np
+                    l = np.array(left_samples, dtype=np.float64) if not isinstance(left_samples, np.ndarray) else left_samples
+                    r = np.array(right_samples, dtype=np.float64) if not isinstance(right_samples, np.ndarray) else right_samples
+                    self._vectorscope.feed_samples(l, r)
+                    if not self._vectorscope._timer.isActive():
+                        self._vectorscope.start()
+                except Exception:
+                    pass
+
+        # F-9: Wire WLM Plus meter real-time feed
+        if _HAS_WLM_PLUS and hasattr(self, '_wlm_plus_meter') and self._wlm_plus_meter:
+            try:
+                self._wlm_plus_meter.update_meters(
+                    momentary=latest.get("lufs_momentary", -70.0),
+                    short_term=latest.get("lufs_short_term", -70.0),
+                    integrated=latest.get("lufs_integrated", -70.0),
+                    true_peak_l=tp_l,
+                    true_peak_r=tp_r,
+                    lra=latest.get("lra", 0.0),
+                    gain_reduction=latest.get("gain_reduction_db", 0.0),
+                )
+            except Exception:
+                pass
 
         # V5.6: Update Waves WLM meter in MetersPanel
         if hasattr(self, 'meters') and hasattr(self.meters, 'live_wlm_meter'):
