@@ -111,29 +111,37 @@ class AIAssist:
 
         # --- Maximizer Recommendations ---
         rec.maximizer.enabled = True
-        rec.maximizer.irc_mode = profile.get("irc_mode", "IRC II")
+        # V5.5 FIX: Use set_irc_mode() to trigger legacy name mapping
+        # Default "IRC 2" (not legacy "IRC II") matches IRC_MODES dict keys
+        irc_mode = profile.get("irc_mode", "IRC 2")
+        irc_sub_mode = profile.get("irc_sub_mode", None)
+        rec.maximizer.set_irc_mode(irc_mode, irc_sub_mode)
         rec.maximizer.tone = profile.get("tone", "Transparent")
-        rec.maximizer.ceiling = profile.get("true_peak_ceiling", platform_target["true_peak"])
+        rec.maximizer.set_ceiling(
+            profile.get("true_peak_ceiling", platform_target["true_peak"]))
 
-        # Adjust threshold based on how loud the audio already is
+        # Adjust GAIN PUSH based on how loud the audio already is
+        # V5.5 FIX: Use set_gain() instead of non-existent .threshold attribute.
+        # The Maximizer uses gain_db (0 to +20 dB) to push audio into the limiter.
         if loudness:
             current_lufs = loudness.integrated_lufs
             target_lufs = max(profile.get("target_lufs", -14), platform_target["target_lufs"])
             lufs_diff = target_lufs - current_lufs
 
             if lufs_diff > 0:
-                # Audio is quieter than target — need more limiting
-                rec.maximizer.threshold = max(-20, -abs(lufs_diff) * 1.5)
+                # Audio is quieter than target — need gain push into limiter
+                gain_push = min(20.0, abs(lufs_diff) * 1.2)
+                rec.maximizer.set_gain(gain_push)
                 rec.explanations.append(
                     f"Audio is {abs(lufs_diff):.1f} LU below target — "
-                    f"Maximizer will increase loudness"
+                    f"Maximizer gain push: +{gain_push:.1f} dB"
                 )
             else:
-                # Audio is already loud enough
-                rec.maximizer.threshold = -3.0  # Gentle limiting only
+                # Audio is already loud enough — gentle limiting only
+                rec.maximizer.set_gain(2.0)
                 rec.explanations.append(
                     f"Audio is already {abs(lufs_diff):.1f} LU above target — "
-                    f"Light limiting applied for peak control"
+                    f"Light limiting applied for peak control (+2.0 dB)"
                 )
 
         # --- EQ Recommendations ---
