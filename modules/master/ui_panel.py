@@ -5195,7 +5195,8 @@ class MasterPanel(QWidget):
 
     def _on_reset_all(self):
         self.chain = MasterChain(self.chain.ffmpeg_path)
-        if hasattr(self, '_current_audio_path'):
+        self.chain.set_meter_callback(self._on_meter_data)
+        if self._current_audio_path:
             self.chain.load_audio(self._current_audio_path)
         self._sync_ui_from_chain()
 
