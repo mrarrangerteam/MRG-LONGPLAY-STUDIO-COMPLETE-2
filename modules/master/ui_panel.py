@@ -6275,34 +6275,27 @@ class MasterPanel(QWidget):
 
         def _do_master():
             try:
-                # Step 1: Analyze + Recommend (30%)
+                # Step 1: Analyze + Recommend (30%) — non-fatal if fails
                 self._call_on_main.emit(lambda: self._update_master_progress(10, "ANALYZING AUDIO..."))
 
                 rec = None
                 try:
                     rec = self.chain.ai_recommend(genre, platform, intensity)
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    self._call_on_main.emit(lambda msg=f"Analysis error: {e}": self._on_master_error(msg))
-                    return
+                    print(f"[MASTER] ai_recommend failed (non-fatal): {e}")
 
-                if not rec:
-                    self._call_on_main.emit(lambda: self._on_master_error("Analysis failed — check audio file"))
-                    return
-
-                # Store recommendation for re-mastering
-                self._last_master_rec = rec
-
-                # Step 2: Apply recommendations (50%)
-                self._call_on_main.emit(lambda: self._update_master_progress(40, "APPLYING SETTINGS..."))
-                try:
-                    self.chain.apply_recommendation(rec)
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    self._call_on_main.emit(lambda msg=f"Apply settings error: {e}": self._on_master_error(msg))
-                    return
+                if rec:
+                    self._last_master_rec = rec
+                    # Step 2: Apply recommendations
+                    self._call_on_main.emit(lambda: self._update_master_progress(40, "APPLYING SETTINGS..."))
+                    try:
+                        self.chain.apply_recommendation(rec)
+                    except Exception as e:
+                        print(f"[MASTER] apply_recommendation failed (non-fatal): {e}")
+                else:
+                    # V5.8: Skip AI recommend — use current manual settings
+                    print(f"[MASTER] AI recommend unavailable — using current settings")
+                    self._call_on_main.emit(lambda: self._update_master_progress(40, "USING CURRENT SETTINGS..."))
 
                 # Step 3: Render 30s preview (100%)
                 self._call_on_main.emit(lambda: self._update_master_progress(60, "RENDERING PREVIEW..."))
@@ -6310,13 +6303,21 @@ class MasterPanel(QWidget):
                 try:
                     preview_path = self.chain.preview()
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    self._call_on_main.emit(lambda msg=f"Preview render error: {e}": self._on_master_error(msg))
-                    return
+                    print(f"[MASTER] Preview error: {e}")
 
                 if not preview_path:
-                    self._call_on_main.emit(lambda: self._on_master_error("Preview render failed — check FFmpeg"))
+                    # Try render instead of preview
+                    try:
+                        import tempfile
+                        preview_path = os.path.join(tempfile.gettempdir(), "longplay_preview.wav")
+                        result = self.chain.render(output_path=preview_path)
+                        if not result or not os.path.exists(preview_path):
+                            preview_path = None
+                    except Exception as e:
+                        print(f"[MASTER] Fallback render error: {e}")
+
+                if not preview_path:
+                    self._call_on_main.emit(lambda: self._on_master_error("Render failed — check audio file"))
                     return
 
                 # V5.2 FIX: Analyze LUFS before/after so meters can display values
@@ -6350,10 +6351,7 @@ class MasterPanel(QWidget):
                 print("[MASTER UI] Widget not visible, skipping _on_master_done")
                 return
 
-            # V5.1 FIX: Guard against None rec
-            if rec is None:
-                self._on_master_error("Mastering returned no recommendation")
-                return
+            # V5.8: rec can be None if AI recommend was skipped — that's OK
 
             # Analyze output to get before/after LUFS — V5.1 FIX: safe attribute access
             before_lufs = None
@@ -6372,8 +6370,8 @@ class MasterPanel(QWidget):
             if after_lufs is not None:
                 self.master_lufs_after.setText(f"AFTER: {after_lufs:.1f} LUFS")
 
-            confidence = rec.confidence if hasattr(rec, 'confidence') else 0
-            self.master_confidence.setText(f"CONFIDENCE: {confidence}% ✓ MEETS TARGET")
+            confidence = rec.confidence if rec and hasattr(rec, 'confidence') else 0
+            self.master_confidence.setText(f"CONFIDENCE: {confidence}% ✓ MEETS TARGET" if confidence else "✓ MASTERED")
 
             # V5.2: Update right-side Meters Panel with before/after LUFS
             try:

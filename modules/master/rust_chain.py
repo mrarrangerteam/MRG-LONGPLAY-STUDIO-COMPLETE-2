@@ -369,32 +369,84 @@ class MasterChain:
             profile = GENRE_PROFILES[genre]
             self._target_lufs = profile.get("target_lufs", -14.0)
 
+    def _get_python_chain(self):
+        """Lazy-load Python chain.py as fallback for Rust failures."""
+        if not hasattr(self, '_py_chain'):
+            from .chain import MasterChain as PyChain
+            self._py_chain = PyChain(self._ffmpeg)
+        return self._py_chain
+
+    def _sync_settings_to_python(self):
+        """Sync current settings from Proxy objects to Python chain for fallback."""
+        py = self._get_python_chain()
+        py.intensity = self._intensity
+        py.target_lufs = self._target_lufs
+        py.target_tp = self._target_tp
+        py.normalize_loudness = self._normalize_loudness
+        if self._input_path:
+            py.input_path = self._input_path
+        # Sync module settings from proxy Python objects
+        py.equalizer = self.equalizer._py
+        py.dynamics = self.dynamics._py
+        py.imager = self.imager._py
+        py.maximizer = self.maximizer._py
+        if self._meter_callback:
+            py.set_meter_callback(self._meter_callback)
+        return py
+
     def ai_recommend(self, genre=None, platform=None, intensity=None):
         norm_platform = self._normalize_platform(platform or "YouTube")
         norm_genre = (genre or "Pop").lower()
+        # Try Rust first
         try:
             if self._backend == "rust":
                 return self._native.ai_recommend(norm_genre, norm_platform, intensity or 0.5)
             elif self._backend == "cpp":
                 return self._native.ai_recommend(norm_genre, norm_platform, intensity or 50.0)
         except Exception as e:
-            print(f"[RUST CHAIN] ai_recommend error: {e}")
-            return None
+            print(f"[RUST CHAIN] ai_recommend error: {e}, falling back to Python")
+        # Fallback to Python AIAssist
+        try:
+            if self._input_path:
+                from .ai_assist import AIAssist
+                ai = AIAssist(self._ffmpeg)
+                rec = ai.analyze_and_recommend(
+                    self._input_path,
+                    genre=genre or "All-Purpose Mastering",
+                    platform=platform or "YouTube",
+                    intensity=intensity or 50,
+                )
+                return rec
+        except Exception as e2:
+            print(f"[RUST CHAIN] Python ai_recommend fallback error: {e2}")
+        return None
 
     def apply_recommendation(self, rec):
         try:
             self._native.apply_recommendation(rec)
         except Exception as e:
-            print(f"[RUST CHAIN] apply_recommendation error: {e}")
+            print(f"[RUST CHAIN] apply_recommendation error (non-fatal): {e}")
 
     def preview(self, start_sec=0.0, duration_sec=10.0, callback=None):
+        # Try Rust first
         try:
             if self._backend == "rust":
-                return self._native.preview(start_sec, duration_sec, callback)
+                result = self._native.preview(start_sec, duration_sec, callback)
+                if result:
+                    return result
             elif self._backend == "cpp":
-                return self._native.preview(start_sec, duration_sec)
+                result = self._native.preview(start_sec, duration_sec)
+                if result:
+                    return result
         except Exception as e:
-            print(f"[RUST CHAIN] preview error: {e}")
+            print(f"[RUST CHAIN] preview error: {e}, falling back to Python")
+        # Fallback to Python chain
+        try:
+            py = self._sync_settings_to_python()
+            result = py.preview(start_sec=start_sec, duration_sec=duration_sec, callback=callback)
+            return result
+        except Exception as e2:
+            print(f"[RUST CHAIN] Python preview fallback error: {e2}")
             return None
 
     @property
@@ -407,20 +459,37 @@ class MasterChain:
 
     def render(self, output_path=None, callback=None):
         if output_path is None:
-            output_path = os.path.join(
-                os.path.dirname(self._input_path) if self._input_path else ".",
-                "mastered_output.wav")
+            if self.output_path:
+                output_path = self.output_path
+            else:
+                output_path = os.path.join(
+                    os.path.dirname(self._input_path) if self._input_path else ".",
+                    "mastered_output.wav")
         cb = callback or self._progress_callback
+        # Try Rust first
         try:
             if self._backend == "rust":
                 result = self._native.render(output_path, cb)
             elif self._backend == "cpp":
                 result = self._native.render(output_path, cb)
-            self.output_path = output_path
-            return result
+            # Verify output file is not empty (Rust may create header-only WAV)
+            if result and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                self.output_path = output_path
+                return output_path
+            else:
+                print(f"[RUST CHAIN] Rust render produced empty/small file, falling back to Python")
         except Exception as e:
-            print(f"[RUST CHAIN] render error: {e}")
-            return None
+            print(f"[RUST CHAIN] render error: {e}, falling back to Python")
+        # Fallback to Python chain
+        try:
+            py = self._sync_settings_to_python()
+            result = py.render(output_path=output_path, callback=cb)
+            if result and os.path.exists(result):
+                self.output_path = result
+                return result
+        except Exception as e2:
+            print(f"[RUST CHAIN] Python render fallback error: {e2}")
+        return None
 
     def get_ab_comparison(self):
         try:
